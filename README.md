@@ -7,3 +7,8 @@ and build the project by simply running:
 ```bash
 $ sbt compile
 ```
+
+Create test coverage reports by running:
+```bash
+$ sbt clean coverage test coverageReport
+```

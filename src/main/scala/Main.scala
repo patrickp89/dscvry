@@ -1,16 +1,14 @@
 import de.netherspace.apps.dscvry.CddbdServer
 
-import scala.concurrent.ExecutionContext.Implicits.global
-import scala.util.{Failure, Success}
+import java.util.concurrent.Executors
 
 object Main extends App {
   val ServerPort = 8880
-  val server: Unit = new CddbdServer().bootstrap(ServerPort) match {
-    case Left(e) => println(s"Could not bootstrap server! $e")
-    case Right(f) => f onComplete {
-      case Success(_) => println("Up and running!")
-      case Failure(e) => println(s"Something went wrong! ${e.getMessage}")
-    }
-  }
+  val executor = Executors.newCachedThreadPool()
 
+  new CddbdServer().bootstrap(ServerPort).map(
+    f => executor.submit(new Runnable {
+      override def run(): Unit = f.apply()
+    })
+  )
 }
