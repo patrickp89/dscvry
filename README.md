@@ -10,5 +10,5 @@ $ sbt compile
 
 Create test coverage reports by running:
 ```bash
-$ sbt clean coverage test coverageReport
+$ sbt coverage test coverageReport
 ```

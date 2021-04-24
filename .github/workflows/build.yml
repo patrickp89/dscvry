@@ -1,0 +1,21 @@
+name: Build
+
+on: [push, pull_request]
+jobs:
+  compile:
+    name: compile and test
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout code
+        uses: actions/checkout@v2
+
+      - name: setup Scala
+        uses: olafurpg/setup-scala@v10
+        with:
+          java-version: "adopt@1.15.0-1"
+
+      - name: SBT compile
+        run: sbt compile
+
+      - name: SBT test
+        run: sbt coverage test coverageReport
