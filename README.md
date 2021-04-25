@@ -1,4 +1,6 @@
 # dscvry
+[![Build Status](https://github.com/patrickp89/dscvry/actions/workflows/build.yml/badge.svg)](https://github.com/patrickp89/dscvry/actions/workflows/build.yml)
+
 A scalable CDDBd implementation.
 
 ## How to build it?

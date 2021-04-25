@@ -26,6 +26,12 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     )
   }
 
+  private def openNewClientConn(): Socket = {
+    val clientSocket = new Socket("127.0.0.1", testPort)
+    clientSocket.setSoTimeout(5200)
+    clientSocket
+  }
+
   private def readBanner(isr: InputStreamReader): String = {
     val sb = new StringBuilder
     for (_ <- Seq.range(0, expBannerLength)) {
@@ -43,9 +49,20 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     executor.isEmpty should be(false)
   }
 
+  it should "send a banner when a client connects" in {
+    val clientSocket = openNewClientConn()
+    val isr = new InputStreamReader(clientSocket.getInputStream)
+
+    val banner = readBanner(isr)
+    isr.close()
+    clientSocket.close()
+
+    banner.length should be(expBannerLength)
+    banner should startWith("201 Dscvry CDDBP server v0.0.1 ready at ")
+  }
+
   it should "respond with hello and welcome to finish the handshake" in {
-    val clientSocket = new Socket("127.0.0.1", testPort)
-    clientSocket.setSoTimeout(5600)
+    val clientSocket = openNewClientConn()
     val out = clientSocket.getOutputStream
     val isr = new InputStreamReader(clientSocket.getInputStream)
 
@@ -73,6 +90,38 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
 
     handshakeResponse.length should be(expResponseLength)
     handshakeResponse should startWith("hello and welcome anonymous running testclient 0.0.1")
+  }
+
+  it should "allow multiple client connections" in {
+    // open a first connection and read the banner:
+    val clientSocket1 = openNewClientConn()
+    val isr1 = new InputStreamReader(clientSocket1.getInputStream)
+    val banner1 = readBanner(isr1)
+
+    // open a second connection and read the banner:
+    val clientSocket2 = openNewClientConn()
+    val isr2 = new InputStreamReader(clientSocket2.getInputStream)
+    val banner2 = readBanner(isr2)
+
+    // close all connections:
+    clientSocket1.close()
+    isr1.close()
+    clientSocket2.close()
+    isr2.close()
+
+    // did we receive our banners?
+    banner1.length should be(expBannerLength)
+    banner2.length should be(expBannerLength)
+
+    // open a third connection (AFTER the first two
+    // were closed!) and read the banner:
+    val clientSocket3 = openNewClientConn()
+    val isr3 = new InputStreamReader(clientSocket3.getInputStream)
+    val banner3 = readBanner(isr3)
+
+    clientSocket3.close()
+    isr3.close()
+    banner3.length should be(expBannerLength)
   }
 
   override def afterAll(): Unit = {

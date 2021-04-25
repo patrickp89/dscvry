@@ -2,9 +2,9 @@ package de.netherspace.apps.dscvry
 
 import java.io.ByteArrayOutputStream
 import java.net.InetSocketAddress
+import java.nio.ByteBuffer
 import java.nio.channels._
 import java.nio.charset.StandardCharsets
-import java.nio.{BufferUnderflowException, ByteBuffer}
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import java.util
@@ -31,51 +31,6 @@ class CddbdServer {
     buffer.put(serverBanner.getBytes(StandardCharsets.UTF_8))
   }
 
-  private def registerNewClientConn(selector: Selector, key: SelectionKey): Unit = {
-    val serverSocketChannel: ServerSocketChannel = key
-      .channel().asInstanceOf[ServerSocketChannel]
-
-    try {
-      val clientSocketChannel = serverSocketChannel.accept()
-      if (clientSocketChannel != null) {
-        clientSocketChannel.configureBlocking(false)
-
-        // the first thing we'll do (i.e. right after the connection
-        // is established and before the clients sends anything) is
-        // sending a server banner (see "CDDB Protocol Level 1"):
-        println("Writing banner to client")
-        clientSocketChannel.register(
-          selector,
-          SelectionKey.OP_WRITE,
-          writeBanner()
-        )
-      }
-    } catch {
-      case ce: ClosedChannelException => println("Channel was closed!")
-      case cs: ClosedSelectorException => println("Selector was closed")
-      case ibm: IllegalBlockingModeException => println("An illegal blocking mode was chosen!")
-      case ise: IllegalSelectorException => println("An IllegalSelectorException occurred!")
-      case cke: CancelledKeyException => println("The key was already cancelled!")
-      case ile: IllegalArgumentException => println("Channel Op not allowed!")
-      case e1: java.io.IOException => println("Could not accept() new client!")
-    }
-
-    try {
-      // re-register the server socket to accept new clients:
-      serverSocketChannel.register(
-        selector,
-        SelectionKey.OP_ACCEPT
-      )
-    } catch {
-      case ce: ClosedChannelException => println("Channel was closed!")
-      case cs: ClosedSelectorException => println("Selector was closed")
-      case ibm: IllegalBlockingModeException => println("An illegal blocking mode was chosen!")
-      case ise: IllegalSelectorException => println("An IllegalSelectorException occurred!")
-      case cke: CancelledKeyException => println("The key was already cancelled!")
-      case ile: IllegalArgumentException => println("Channel Op not allowed!")
-    }
-  }
-
   private def handleRequest(rawBytes: ByteArrayOutputStream): Array[Byte] = {
     // TODO: send the real response!
     val stubResponse = "hello and welcome anonymous running testclient 0.0.1"
@@ -87,33 +42,69 @@ class CddbdServer {
   private def sendResponse(selector: Selector, clientChannel: SocketChannel,
                            buffer: ByteBuffer, response: Array[Byte]): Unit = {
     try {
-      val responseBuffer = buffer.clear().rewind().put(response)
-
+      val responseBuffer = buffer.clear().put(response)
       clientChannel.register(
         selector,
         SelectionKey.OP_WRITE,
         responseBuffer
       )
     } catch {
-      case ce: ClosedChannelException => println("Channel was closed!")
-      case cs: ClosedSelectorException => println("Selector was closed")
-      case ibm: IllegalBlockingModeException => println("An illegal blocking mode was chosen!")
-      case ise: IllegalSelectorException => println("An IllegalSelectorException occurred!")
-      case cke: CancelledKeyException => println("The key was already cancelled!")
-      case ile: IllegalArgumentException => println("Channel Op not allowed!")
+      case t: Throwable => println(s"Could not register client channel for OP_WRITE! $t")
+    }
+  }
+
+  private def registerNewClientConn(selector: Selector, key: SelectionKey): Unit = {
+    println("registerNewClientConn()")
+    val serverSocketChannel: ServerSocketChannel = key
+      .channel().asInstanceOf[ServerSocketChannel]
+
+    try {
+      val clientSocketChannel = serverSocketChannel.accept()
+      if (clientSocketChannel != null) {
+        clientSocketChannel.configureBlocking(false)
+
+        // the first thing we'll do (i.e. right after the connection
+        // is established and before the clients sends anything) is
+        // sending a server banner (see "CDDB Protocol Level 1"):
+        println(s"Writing banner to client channel $clientSocketChannel")
+        clientSocketChannel.register(
+          selector,
+          SelectionKey.OP_WRITE,
+          writeBanner()
+        )
+      }
+    } catch {
+      case t: Throwable => println(s"Could not register new client! $t")
+    }
+
+    try {
+      // re-register the server channel to accept new clients:
+      serverSocketChannel.register(
+        selector,
+        SelectionKey.OP_ACCEPT
+      )
+      println("Re-registered server channel to accept new clients")
+    } catch {
+      case t: Throwable => println(s"Could not re-register server channel! $t")
     }
   }
 
   private def readFromClientConn(selector: Selector, key: SelectionKey): Unit = {
+    println("readFromClientConn()")
     val clientChannel: SocketChannel = key.channel().asInstanceOf[SocketChannel]
 
-    try {
-      if (clientChannel.isConnected) {
+    if (clientChannel.isConnected) {
+      try {
         val buffer = ByteBuffer.allocate(defaultRequestBufferSize)
         val i = clientChannel.read(buffer)
         println(s"I read $i bytes from buffer!")
 
-        if (i > 0) {
+        if (i < 0) {
+          println(s"Closing client channel $clientChannel ...")
+          clientChannel.close()
+          println("Done closing client channel!")
+
+        } else {
           buffer.flip()
           val rawBytes = new ByteArrayOutputStream()
           while (buffer.hasRemaining) {
@@ -122,8 +113,7 @@ class CddbdServer {
               buffer.get(content)
               rawBytes.write(content)
             } catch {
-              case ufe: BufferUnderflowException => println("BufferUnderflowException!")
-              case e1: java.io.IOException => println("Could not write to ByteArrayOutputStream!")
+              case t: Throwable => println(s"Could not read from client channel! $t")
             }
           }
           println(s"I read: '${rawBytes.toString(StandardCharsets.UTF_8)}'")
@@ -133,24 +123,18 @@ class CddbdServer {
 
           // send the response back to the client:
           sendResponse(selector, clientChannel, buffer, response)
-
-        } else if (i < 0) {
-          clientChannel.close()
         }
-
-      } else {
-        println("Client channel is not connected!")
+      } catch {
+        case t: Throwable => println(s"Could not read from server channel! $t")
       }
-    } catch {
-      case ce: ClosedChannelException => println("Channel was closed!")
-      case iae: IllegalArgumentException => println("Could not allocate buffer!")
-      case nyc: NotYetConnectedException => println("The channel is not yet connected!")
-      case nrc: NonReadableChannelException => println("The channel is not readable!")
-      case ioe: java.io.IOException => println("Something went wrong when trying to read from client channel!")
+
+    } else {
+      println("Client channel is not connected!")
     }
   }
 
   private def writeToClientConn(selector: Selector, key: SelectionKey): Unit = {
+    println("writeToClientConn()")
     val clientChannel: SocketChannel = key.channel().asInstanceOf[SocketChannel]
 
     try {
@@ -160,57 +144,52 @@ class CddbdServer {
           println(s"No buffer attached to channel $clientChannel!")
         } else {
           val buffer: ByteBuffer = attachment.asInstanceOf[ByteBuffer]
-          clientChannel.write(buffer.flip())
+          buffer.flip()
+          while (buffer.hasRemaining) {
+            val i = clientChannel.write(buffer)
+            println(s"I wrote $i bytes to client channel $clientChannel!")
+          }
         }
       }
     } catch {
-      case ce: ClosedChannelException => println("Channel was closed!")
-      case nwc: NonWritableChannelException => println("Could not write to channel!")
+      case t: Throwable => println(s"Could not write to channel! $t")
     }
 
     try {
-      println("Registering client socket for OP_READ")
+      println(s"Registering client channel $clientChannel for OP_READ")
       clientChannel.register(
         selector,
         SelectionKey.OP_READ,
         null
       )
     } catch {
-      case ce: ClosedChannelException => println("Channel was closed!")
-      case cs: ClosedSelectorException => println("Selector was closed")
-      case ibm: IllegalBlockingModeException => println("An illegal blocking mode was chosen!")
-      case ise: IllegalSelectorException => println("An IllegalSelectorException occurred!")
-      case cke: CancelledKeyException => println("The key was already cancelled!")
-      case ile: IllegalArgumentException => println("Channel Op not allowed!")
+      case t: Throwable => println(s"Could not re-register client channel for OP_READ! $t")
     }
   }
 
   private def consumeSingleKey(selector: Selector, key: SelectionKey): Unit = {
     if (key.isAcceptable) registerNewClientConn(selector, key)
-    if (key.isReadable) readFromClientConn(selector, key)
     if (key.isWritable) writeToClientConn(selector, key)
+    if (key.isReadable) readFromClientConn(selector, key)
   }
 
   private def consumeKeys(selector: Selector,
                           selectionKeys: util.Iterator[SelectionKey]): Unit = {
-    while (selectionKeys.hasNext) { // TODO: use forEachRemaining() instead!
-      val key = selectionKeys.next()
-      consumeSingleKey(selector, key)
-      selectionKeys.remove()
+    selectionKeys.forEachRemaining {
+      k => consumeSingleKey(selector, k)
     }
   }
 
   private def selectKeys(selector: Selector,
                          serverSocketChannel: ServerSocketChannel): Unit = {
     serverSocketChannel.configureBlocking(false)
-    println("Registering ServerSocketChannel for OP_ACCEPT...")
     try {
-      serverSocketChannel.register(selector, SelectionKey.OP_ACCEPT)
+      serverSocketChannel.register(
+        selector,
+        SelectionKey.OP_ACCEPT
+      )
     } catch {
-      case e: java.nio.channels.IllegalBlockingModeException => println(
-        s"Could not register ServerSocketChannel for OP_ACCEPT! $e")
-      case t: Throwable => println(
-        s"Could not register ServerSocketChannel for OP_ACCEPT! $t")
+      case t: Throwable => println(s"Could not register ServerSocketChannel for OP_ACCEPT! $t")
     }
 
     while (running) { // TODO: use an infinite, tail-recursive loop instead!
