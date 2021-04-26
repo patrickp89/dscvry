@@ -5,44 +5,18 @@ import java.net.InetSocketAddress
 import java.nio.ByteBuffer
 import java.nio.channels._
 import java.nio.charset.StandardCharsets
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 import java.util
 
 class CddbdServer {
 
-  private val appName = "Dscvry"
   private val defaultRequestBufferSize = 1024
   private val running = true
-
-  private def createBanner(): String = {
-    val okReadOnlyStatusCode = 201
-    val version = "v0.0.1"
-    val dateTimeFormat = "EEE LLL dd HH:mm:ss yyyy"
-    val dtf = DateTimeFormatter.ofPattern(dateTimeFormat)
-    val ts = LocalDateTime.now().format(dtf)
-    s"$okReadOnlyStatusCode $appName CDDBP server $version ready at $ts"
-  }
-
-  private def writeBanner(): ByteBuffer = {
-    val serverBanner = createBanner()
-    val bannerLength = serverBanner.length
-    val buffer = ByteBuffer.allocate(bannerLength)
-    buffer.put(serverBanner.getBytes(StandardCharsets.UTF_8))
-  }
-
-  private def handleRequest(rawBytes: ByteArrayOutputStream): Array[Byte] = {
-    // TODO: send the real response!
-    val stubResponse = "hello and welcome anonymous running testclient 0.0.1"
-    val bytes = stubResponse.getBytes(StandardCharsets.UTF_8)
-    println(s"Response is ${bytes.length} bytes long!")
-    bytes
-  }
 
   private def sendResponse(selector: Selector, clientChannel: SocketChannel,
                            buffer: ByteBuffer, response: Array[Byte]): Unit = {
     try {
       val responseBuffer = buffer.clear().put(response)
+
       clientChannel.register(
         selector,
         SelectionKey.OP_WRITE,
@@ -54,7 +28,6 @@ class CddbdServer {
   }
 
   private def registerNewClientConn(selector: Selector, key: SelectionKey): Unit = {
-    println("registerNewClientConn()")
     val serverSocketChannel: ServerSocketChannel = key
       .channel().asInstanceOf[ServerSocketChannel]
 
@@ -70,7 +43,7 @@ class CddbdServer {
         clientSocketChannel.register(
           selector,
           SelectionKey.OP_WRITE,
-          writeBanner()
+          CddbdProtocol.writeBanner()
         )
       }
     } catch {
@@ -90,7 +63,6 @@ class CddbdServer {
   }
 
   private def readFromClientConn(selector: Selector, key: SelectionKey): Unit = {
-    println("readFromClientConn()")
     val clientChannel: SocketChannel = key.channel().asInstanceOf[SocketChannel]
 
     if (clientChannel.isConnected) {
@@ -100,11 +72,9 @@ class CddbdServer {
         println(s"I read $i bytes from buffer!")
 
         if (i < 0) {
-          println(s"Closing client channel $clientChannel ...")
           clientChannel.close()
-          println("Done closing client channel!")
 
-        } else {
+        } else if (i > 0) {
           buffer.flip()
           val rawBytes = new ByteArrayOutputStream()
           while (buffer.hasRemaining) {
@@ -119,7 +89,7 @@ class CddbdServer {
           println(s"I read: '${rawBytes.toString(StandardCharsets.UTF_8)}'")
 
           // handle the request!
-          val response = handleRequest(rawBytes)
+          val response = CddbdProtocol.handleRequest(rawBytes)
 
           // send the response back to the client:
           sendResponse(selector, clientChannel, buffer, response)
@@ -134,15 +104,12 @@ class CddbdServer {
   }
 
   private def writeToClientConn(selector: Selector, key: SelectionKey): Unit = {
-    println("writeToClientConn()")
     val clientChannel: SocketChannel = key.channel().asInstanceOf[SocketChannel]
 
     try {
       if (clientChannel.isConnected) {
         val attachment = key.attachment()
-        if (attachment == null) {
-          println(s"No buffer attached to channel $clientChannel!")
-        } else {
+        if (attachment != null) {
           val buffer: ByteBuffer = attachment.asInstanceOf[ByteBuffer]
           buffer.flip()
           while (buffer.hasRemaining) {

@@ -65,7 +65,6 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     val clientSocket = openNewClientConn()
     val out = clientSocket.getOutputStream
     val isr = new InputStreamReader(clientSocket.getInputStream)
-
     readBanner(isr)
 
     val clientHelloMessage = "cddb hello anonymous localhost testclient 0.0.1"
@@ -74,7 +73,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     printWriter.flush()
     out.flush()
 
-    val expResponseLength = 52
+    val expResponseLength = 56
     val sb = new StringBuilder
     for (_ <- Seq.range(0, expResponseLength)) {
       val c = isr.read()
@@ -89,7 +88,37 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     val handshakeResponse = sb.toString()
 
     handshakeResponse.length should be(expResponseLength)
-    handshakeResponse should startWith("hello and welcome anonymous running testclient 0.0.1")
+    handshakeResponse should be("200 Hello and welcome anonymous running testclient 0.0.1")
+  }
+
+  it should "allow clients to set a CDDB protocol level" in {
+    val clientSocket = openNewClientConn()
+    val out = clientSocket.getOutputStream
+    val isr = new InputStreamReader(clientSocket.getInputStream)
+    readBanner(isr)
+
+    val clientHelloMessage = "proto 6"
+    val printWriter = new PrintWriter(out)
+    printWriter.write(clientHelloMessage)
+    printWriter.flush()
+    out.flush()
+
+    val expResponseLength = 34
+    val sb = new StringBuilder
+    for (_ <- Seq.range(0, expResponseLength)) {
+      val c = isr.read()
+      sb.append(c.asInstanceOf[Char])
+    }
+
+    isr.close()
+    out.close()
+    clientSocket.close()
+
+    sb.length() should be > 0
+    val handshakeResponse = sb.toString()
+
+    handshakeResponse.length should be(expResponseLength)
+    handshakeResponse should be("201 OK, CDDB protocol level now: 6")
   }
 
   it should "allow multiple client connections" in {
