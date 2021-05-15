@@ -9,18 +9,16 @@ import java.util
 
 class CddbdServer {
 
-  private val defaultRequestBufferSize = 1024
   private val running = true
+  private val cddbdProtocol = new CddbdProtocol(new CddbDatabase())
 
   private def sendResponse(selector: Selector, clientChannel: SocketChannel,
-                           buffer: ByteBuffer, response: Array[Byte]): Unit = {
+                           newSessionState: CddbSessionState): Unit = {
     try {
-      val responseBuffer = buffer.clear().put(response)
-
       clientChannel.register(
         selector,
         SelectionKey.OP_WRITE,
-        responseBuffer
+        newSessionState
       )
     } catch {
       case t: Throwable => println(s"Could not register client channel for OP_WRITE! $t")
@@ -43,7 +41,7 @@ class CddbdServer {
         clientSocketChannel.register(
           selector,
           SelectionKey.OP_WRITE,
-          CddbdProtocol.writeBanner()
+          cddbdProtocol.writeBanner()
         )
       }
     } catch {
@@ -56,48 +54,78 @@ class CddbdServer {
         selector,
         SelectionKey.OP_ACCEPT
       )
-      println("Re-registered server channel to accept new clients")
     } catch {
       case t: Throwable => println(s"Could not re-register server channel! $t")
     }
   }
 
+  private def readRequest(selector: Selector, clientChannel: SocketChannel,
+                          sessionState: CddbSessionState): Unit = {
+    try {
+      val buffer: ByteBuffer = sessionState.buffer.get
+      val i = clientChannel.read(buffer)
+
+      if (i < 0) {
+        println(s"I read $i bytes from buffer!")
+        clientChannel.close()
+
+      } else if (i > 0) {
+        println(s"I read $i bytes from buffer!")
+        buffer.flip()
+        val rawBytes = new ByteArrayOutputStream()
+        while (buffer.hasRemaining) {
+          val content = new Array[Byte](buffer.remaining())
+          try {
+            buffer.get(content)
+            rawBytes.write(content)
+          } catch {
+            case t: Throwable => println(s"Could not read from client channel! $t")
+          }
+        }
+        println(s"I read: '${rawBytes.toString(StandardCharsets.UTF_8)}'")
+
+        // handle the request!
+        val newSessionState = cddbdProtocol.handleRequest(
+          rawBytes,
+          sessionState.copy(buffer = Some(buffer))
+        )
+
+        // send the response back to the client:
+        sendResponse(selector, clientChannel, newSessionState)
+      }
+    } catch {
+      case t: Throwable => println(s"Could not read from server channel! $t")
+    }
+  }
+
   private def readFromClientConn(selector: Selector, key: SelectionKey): Unit = {
     val clientChannel: SocketChannel = key.channel().asInstanceOf[SocketChannel]
+    key.interestOps(0)
 
+    // is the client channel still connected?
     if (clientChannel.isConnected) {
-      try {
-        val buffer = ByteBuffer.allocate(defaultRequestBufferSize)
-        val i = clientChannel.read(buffer)
-        println(s"I read $i bytes from buffer!")
 
-        if (i < 0) {
-          clientChannel.close()
+      // is there an attachment attached to this client channel?
+      val attachment = key.attachment()
+      if (attachment != null) {
 
-        } else if (i > 0) {
-          buffer.flip()
-          val rawBytes = new ByteArrayOutputStream()
-          while (buffer.hasRemaining) {
-            val content = new Array[Byte](buffer.remaining())
-            try {
-              buffer.get(content)
-              rawBytes.write(content)
-            } catch {
-              case t: Throwable => println(s"Could not read from client channel! $t")
-            }
-          }
-          println(s"I read: '${rawBytes.toString(StandardCharsets.UTF_8)}'")
-
-          // handle the request!
-          val response = CddbdProtocol.handleRequest(rawBytes)
-
-          // send the response back to the client:
-          sendResponse(selector, clientChannel, buffer, response)
+        // yes, lets check for the buffer:
+        val sessionState: CddbSessionState = attachment.asInstanceOf[CddbSessionState]
+        sessionState.buffer match {
+          case Some(_) =>
+            // now we have a valid CddbSessionState, let's read some bytes:
+            readRequest(selector, clientChannel, sessionState)
+          case None => println("CddbSessionState.Buffer was None when trying to read a request!")
         }
-      } catch {
-        case t: Throwable => println(s"Could not read from server channel! $t")
+      } else {
+        // there is no attachment - this should never happen!
+        println("Something unexpected happened when reading from a client" +
+          " channel: could not find channel attachment")
+        CddbSessionState(
+          protocolLevel = Constants.defaultCddbProtocolLevel,
+          buffer = Some(ByteBuffer.allocate(Constants.defaultRequestBufferSize))
+        )
       }
-
     } else {
       println("Client channel is not connected!")
     }
@@ -105,32 +133,44 @@ class CddbdServer {
 
   private def writeToClientConn(selector: Selector, key: SelectionKey): Unit = {
     val clientChannel: SocketChannel = key.channel().asInstanceOf[SocketChannel]
+    key.interestOps(0)
 
     try {
       if (clientChannel.isConnected) {
         val attachment = key.attachment()
         if (attachment != null) {
-          val buffer: ByteBuffer = attachment.asInstanceOf[ByteBuffer]
-          buffer.flip()
-          while (buffer.hasRemaining) {
-            val i = clientChannel.write(buffer)
-            println(s"I wrote $i bytes to client channel $clientChannel!")
+          val sessionState: CddbSessionState = attachment.asInstanceOf[CddbSessionState]
+
+          sessionState.buffer match {
+            case Some(buffer) => {
+              buffer.flip()
+              while (buffer.hasRemaining) {
+                val i = clientChannel.write(buffer)
+                println(s"I wrote $i bytes to client channel $clientChannel!")
+              }
+
+              clientChannel.register(
+                selector,
+                SelectionKey.OP_READ,
+                sessionState.copy(buffer = Some(buffer.clear()))
+              )
+            }
+            case None => println("CddbSessionState.Buffer was None when trying to write a response!")
           }
+
+        } else {
+          // there is no attachment - this should never happen!
+          println("Something unexpected happened when writing to a client" +
+            " channel: could not find channel attachment")
+          clientChannel.register(
+            selector,
+            SelectionKey.OP_READ,
+            CddbSessionState(Constants.defaultCddbProtocolLevel, None)
+          )
         }
       }
     } catch {
       case t: Throwable => println(s"Could not write to channel! $t")
-    }
-
-    try {
-      println(s"Registering client channel $clientChannel for OP_READ")
-      clientChannel.register(
-        selector,
-        SelectionKey.OP_READ,
-        null
-      )
-    } catch {
-      case t: Throwable => println(s"Could not re-register client channel for OP_READ! $t")
     }
   }
 
@@ -181,7 +221,7 @@ class CddbdServer {
     } catch {
       case e: ClosedChannelException => Left(e.getMessage)
       case e: java.io.IOException => Left(e.getMessage)
-      case t: Throwable => Left("Something unexpected happened!")
+      case t: Throwable => Left(s"Something unexpected happened! $t")
     }
   }
 }

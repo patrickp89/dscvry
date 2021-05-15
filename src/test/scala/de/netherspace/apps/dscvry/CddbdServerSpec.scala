@@ -11,7 +11,7 @@ import java.util.concurrent.{ExecutorService, Executors}
 class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAfterAll {
 
   private val testPort = 9234
-  private val expBannerLength = 64
+  private val expBannerLength = 65
 
   private var executor: Option[ExecutorService] = None
 
@@ -73,7 +73,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     printWriter.flush()
     out.flush()
 
-    val expResponseLength = 56
+    val expResponseLength = 57
     val sb = new StringBuilder
     for (_ <- Seq.range(0, expResponseLength)) {
       val c = isr.read()
@@ -88,7 +88,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     val handshakeResponse = sb.toString()
 
     handshakeResponse.length should be(expResponseLength)
-    handshakeResponse should be("200 Hello and welcome anonymous running testclient 0.0.1")
+    handshakeResponse should be("200 Hello and welcome anonymous running testclient 0.0.1\n")
   }
 
   it should "allow clients to set a CDDB protocol level" in {
@@ -103,7 +103,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     printWriter.flush()
     out.flush()
 
-    val expResponseLength = 34
+    val expResponseLength = 35
     val sb = new StringBuilder
     for (_ <- Seq.range(0, expResponseLength)) {
       val c = isr.read()
@@ -118,7 +118,42 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     val handshakeResponse = sb.toString()
 
     handshakeResponse.length should be(expResponseLength)
-    handshakeResponse should be("201 OK, CDDB protocol level now: 6")
+    handshakeResponse should be("201 OK, CDDB protocol level now: 6\n")
+  }
+
+  it should "return an inexact-matches response if multiple matching discs were found" in {
+    val clientSocket = openNewClientConn()
+    val out = clientSocket.getOutputStream
+    val isr = new InputStreamReader(clientSocket.getInputStream)
+    readBanner(isr)
+
+    val testDiscId = "920eec0b"
+    val numberOfTracks = "11"
+    val trackOffsets = "150 28690 51102 75910 102682 121522 149040 175772 204387 231145 268065"
+    val totalPlayingLength = "3822"
+    val clientQueryDiscIdMessage = s"cddb query $testDiscId $numberOfTracks $trackOffsets $totalPlayingLength"
+
+    val printWriter = new PrintWriter(out)
+    printWriter.write(clientQueryDiscIdMessage)
+    printWriter.flush()
+    out.flush()
+
+    val expResponseLength = 4 // TODO
+    val sb = new StringBuilder
+    for (_ <- Seq.range(0, expResponseLength)) {
+      val c = isr.read()
+      sb.append(c.asInstanceOf[Char])
+    }
+
+    isr.close()
+    out.close()
+    clientSocket.close()
+
+    sb.length() should be > 0
+    val handshakeResponse = sb.toString()
+
+    handshakeResponse.length should be(expResponseLength)
+    handshakeResponse should be("stub") // TODO: inexactmatches response!
   }
 
   it should "allow multiple client connections" in {
