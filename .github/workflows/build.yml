@@ -18,4 +18,5 @@ jobs:
         run: sbt compile
 
       - name: SBT test
-        run: sbt coverage test coverageReport
+        run: sbt test
+#        run: sbt coverage test coverageReport
