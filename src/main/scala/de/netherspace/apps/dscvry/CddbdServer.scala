@@ -1,9 +1,17 @@
 package de.netherspace.apps.dscvry
 
-import java.io.ByteArrayOutputStream
-import java.net.InetSocketAddress
+import zio._
+import zio.blocking.Blocking
+import zio.clock.Clock
+import zio.console._
+import zio.duration._
+import zio.nio.core.channels.SelectionKey.Operation
+import zio.nio.core.channels._
+import zio.nio.core.{InetSocketAddress, SocketAddress}
+import zio.stream._
+
+import java.io.{ByteArrayOutputStream, IOException}
 import java.nio.ByteBuffer
-import java.nio.channels._
 import java.nio.charset.StandardCharsets
 import java.util
 
@@ -12,12 +20,12 @@ class CddbdServer {
   private val running = true
   private val cddbdProtocol = new CddbdProtocol(new CddbDatabase())
 
-  private def sendResponse(selector: Selector, clientChannel: SocketChannel,
+  private def sendResponse(selector: java.nio.channels.Selector, clientChannel: java.nio.channels.SocketChannel,
                            newSessionState: CddbSessionState): Unit = {
     try {
       clientChannel.register(
         selector,
-        SelectionKey.OP_WRITE,
+        java.nio.channels.SelectionKey.OP_WRITE,
         newSessionState
       )
     } catch {
@@ -25,9 +33,9 @@ class CddbdServer {
     }
   }
 
-  private def registerNewClientConn(selector: Selector, key: SelectionKey): Unit = {
-    val serverSocketChannel: ServerSocketChannel = key
-      .channel().asInstanceOf[ServerSocketChannel]
+  private def registerNewClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
+    val serverSocketChannel: java.nio.channels.ServerSocketChannel = key
+      .channel().asInstanceOf[java.nio.channels.ServerSocketChannel]
 
     try {
       val clientSocketChannel = serverSocketChannel.accept()
@@ -40,7 +48,7 @@ class CddbdServer {
         println(s"Writing banner to client channel $clientSocketChannel")
         clientSocketChannel.register(
           selector,
-          SelectionKey.OP_WRITE,
+          java.nio.channels.SelectionKey.OP_WRITE,
           cddbdProtocol.writeBanner()
         )
       }
@@ -52,14 +60,14 @@ class CddbdServer {
       // re-register the server channel to accept new clients:
       serverSocketChannel.register(
         selector,
-        SelectionKey.OP_ACCEPT
+        java.nio.channels.SelectionKey.OP_ACCEPT
       )
     } catch {
       case t: Throwable => println(s"Could not re-register server channel! $t")
     }
   }
 
-  private def readRequest(selector: Selector, clientChannel: SocketChannel,
+  private def readRequest(selector: java.nio.channels.Selector, clientChannel: java.nio.channels.SocketChannel,
                           sessionState: CddbSessionState): Unit = {
     try {
       val buffer: ByteBuffer = sessionState.buffer.get
@@ -98,8 +106,8 @@ class CddbdServer {
     }
   }
 
-  private def readFromClientConn(selector: Selector, key: SelectionKey): Unit = {
-    val clientChannel: SocketChannel = key.channel().asInstanceOf[SocketChannel]
+  private def readFromClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
+    val clientChannel: java.nio.channels.SocketChannel = key.channel().asInstanceOf[java.nio.channels.SocketChannel]
     key.interestOps(0)
 
     // is the client channel still connected?
@@ -131,8 +139,8 @@ class CddbdServer {
     }
   }
 
-  private def writeToClientConn(selector: Selector, key: SelectionKey): Unit = {
-    val clientChannel: SocketChannel = key.channel().asInstanceOf[SocketChannel]
+  private def writeToClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
+    val clientChannel: java.nio.channels.SocketChannel = key.channel().asInstanceOf[java.nio.channels.SocketChannel]
     key.interestOps(0)
 
     try {
@@ -151,7 +159,7 @@ class CddbdServer {
 
               clientChannel.register(
                 selector,
-                SelectionKey.OP_READ,
+                java.nio.channels.SelectionKey.OP_READ,
                 sessionState.copy(buffer = Some(buffer.clear()))
               )
             }
@@ -164,7 +172,7 @@ class CddbdServer {
             " channel: could not find channel attachment")
           clientChannel.register(
             selector,
-            SelectionKey.OP_READ,
+            java.nio.channels.SelectionKey.OP_READ,
             CddbSessionState(Constants.defaultCddbProtocolLevel, None)
           )
         }
@@ -174,26 +182,51 @@ class CddbdServer {
     }
   }
 
-  private def consumeSingleKey(selector: Selector, key: SelectionKey): Unit = {
+  private def consumeSingleKey3(selector: Selector, key: SelectionKey) = //: zio.ZIO[Blocking, Exception, Unit] ?
+    key.matchChannel { readyOps => {
+      case channel: ServerSocketChannel if readyOps(Operation.Accept) =>
+        for {
+          _ <- channel.close
+        } yield ()
+      case client: SocketChannel if readyOps(Operation.Read) =>
+        for {
+
+          _ <- client.close
+        } yield ()
+    }
+    } *> selector.removeKey(key)
+
+  private def consumeSingleKey(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
     if (key.isAcceptable) registerNewClientConn(selector, key)
     if (key.isWritable) writeToClientConn(selector, key)
     if (key.isReadable) readFromClientConn(selector, key)
   }
 
-  private def consumeKeys(selector: Selector,
-                          selectionKeys: util.Iterator[SelectionKey]): Unit = {
+  private def consumeKeys(selector: java.nio.channels.Selector,
+                          selectionKeys: util.Iterator[java.nio.channels.SelectionKey]): Unit = {
     selectionKeys.forEachRemaining {
       k => consumeSingleKey(selector, k)
     }
   }
 
-  private def selectKeys(selector: Selector,
-                         serverSocketChannel: ServerSocketChannel): Unit = {
+  def selectKeys3(scope: Managed.Scope, selector: Selector) = { //: ZIO[Blocking, Exception, Unit] ?
+    for {
+      _ <- console.putStrLn("Selecting keys...").ignore
+      _ <- selector.select
+      selectionKeys <- selector.selectedKeys
+      _ <- IO.foreach_(selectionKeys) { k =>
+        consumeSingleKey3(selector, k)
+      }
+    } yield ()
+  }
+
+  private def selectKeys(selector: java.nio.channels.Selector,
+                         serverSocketChannel: java.nio.channels.ServerSocketChannel): Unit = {
     serverSocketChannel.configureBlocking(false)
     try {
       serverSocketChannel.register(
         selector,
-        SelectionKey.OP_ACCEPT
+        java.nio.channels.SelectionKey.OP_ACCEPT
       )
     } catch {
       case t: Throwable => println(s"Could not register ServerSocketChannel for OP_ACCEPT! $t")
@@ -206,20 +239,37 @@ class CddbdServer {
     }
   }
 
+  def bootstrap3(port: Int) = {
+    for {
+      scope <- Managed.scope
+      selector <- Selector.open
+      serverSocketChannel <- ServerSocketChannel.open
+      _ <- Managed.fromEffect {
+        for {
+          _ <- putStrLn(s"Binding on port $port...")
+          _ <- serverSocketChannel.bindAuto(port)
+          _ <- serverSocketChannel.configureBlocking(false)
+          _ <- serverSocketChannel.register(selector, Operation.Accept)
+          _ <- selectKeys3(scope, selector)
+        } yield ()
+      }
+    } yield ()
+  }
+
   def bootstrap(port: Int): Either[String, () => Unit] = {
     try {
       // create an NIO channel selector and a server socket:
-      val selector = Selector.open()
-      val serverSocketChannel = ServerSocketChannel.open()
+      val selector = java.nio.channels.Selector.open()
+      val serverSocketChannel = java.nio.channels.ServerSocketChannel.open()
 
       println(s"Binding on port $port...")
       serverSocketChannel.bind(
-        new InetSocketAddress("localhost", port)
+        new java.net.InetSocketAddress("localhost", port)
       )
 
       Right(() => selectKeys(selector, serverSocketChannel))
     } catch {
-      case e: ClosedChannelException => Left(e.getMessage)
+      case e: java.nio.channels.ClosedChannelException => Left(e.getMessage)
       case e: java.io.IOException => Left(e.getMessage)
       case t: Throwable => Left(s"Something unexpected happened! $t")
     }

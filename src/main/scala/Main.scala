@@ -1,14 +1,16 @@
 import de.netherspace.apps.dscvry.CddbdServer
+import zio.console._
+import zio.{ExitCode, URIO, ZEnv}
 
-import java.util.concurrent.Executors
-
-object Main extends App {
+object Main extends zio.App {
   val ServerPort = 8880
-  val executor = Executors.newCachedThreadPool()
 
-  new CddbdServer().bootstrap(ServerPort).map(
-    f => executor.submit(new Runnable {
-      override def run(): Unit = f.apply()
-    })
-  )
+  override def run(args: List[String]) = //: URIO[ZEnv, ExitCode] ?
+    appLogic.exitCode
+
+  val appLogic =
+    for {
+      _ <- putStrLn("Captain Placeholder")
+      //_ <- new CddbdServer().bootstrap3(ServerPort).useForever
+    } yield ()
 }

@@ -3,3 +3,8 @@
 target
 .bsp/
 .idea/
+.bloop/
+.metals/
+.vscode/
+project/metals.sbt
+project/project/
