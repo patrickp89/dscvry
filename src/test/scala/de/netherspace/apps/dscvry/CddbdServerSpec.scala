@@ -10,29 +10,30 @@ import java.util.concurrent.{ExecutorService, Executors}
 
 class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAfterAll {
 
-  private val testPort = 9234
+  private val testPort = 8880
   private val expBannerLength = 65
 
   private var executor: Option[ExecutorService] = None
 
-
   override def beforeAll(): Unit = {
-    println("Booting dscvry for tests...")
     executor = Some(Executors.newCachedThreadPool())
-    new CddbdServer().bootstrap(testPort).map(
-      f => executor.get.submit(new Runnable {
-        override def run(): Unit = f.apply()
-      })
-    )
+    executor.get.submit(new Runnable {
+      override def run(): Unit = {
+        println("Booting dscvry for tests...")
+        zio.Runtime.default.unsafeRun(CddbdBootstrap.appLogic.exitCode)
+      }
+    })
+    Thread.sleep(5200) // this is ugly af, but it's an integration test to begin with...
   }
 
   private def openNewClientConn(): Socket = {
     val clientSocket = new Socket("127.0.0.1", testPort)
-    clientSocket.setSoTimeout(5200)
+    clientSocket.setSoTimeout(2100)
     clientSocket
   }
 
   private def readBanner(isr: InputStreamReader): String = {
+    println("Reading banner...")
     val sb = new StringBuilder
     for (_ <- Seq.range(0, expBannerLength)) {
       val c = isr.read()
@@ -47,6 +48,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
 
   "A CDDBd server" should "boot properly" in {
     executor.isEmpty should be(false)
+    executor.get.isShutdown should be(false)
   }
 
   it should "send a banner when a client connects" in {

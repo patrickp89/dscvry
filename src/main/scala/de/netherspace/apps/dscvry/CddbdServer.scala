@@ -7,13 +7,18 @@ import zio.console._
 import zio.duration._
 import zio.nio.core.channels.SelectionKey.Operation
 import zio.nio.core.channels._
-import zio.nio.core.{InetSocketAddress, SocketAddress}
+import zio.nio.core.{Buffer, ByteBuffer, InetSocketAddress, SocketAddress}
 import zio.stream._
 
 import java.io.{ByteArrayOutputStream, IOException}
-import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.util
+
+type CddbdServerApp = zio.ZManaged[
+  zio.Has[zio.console.Console.Service] & zio.Has[zio.clock.Clock.Service],
+  IOException,
+  Unit
+]
 
 class CddbdServer {
 
@@ -33,44 +38,45 @@ class CddbdServer {
     }
   }
 
-  private def registerNewClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
-    val serverSocketChannel: java.nio.channels.ServerSocketChannel = key
-      .channel().asInstanceOf[java.nio.channels.ServerSocketChannel]
+  private def registerForBannerWriting(selector: Selector, clientChannel: SocketChannel) = {
+    // assemble the banner:
+    val banner = cddbdProtocol.writeBanner()
+    for {
+      _ <- putStrLn(s"Writing banner to client channel $clientChannel") // TODO: use a proper logger!
+      // and register the NIO key for writing it:
+      _ <- clientChannel.configureBlocking(false)
+        *> clientChannel.register(
+        selector,
+        Operation.Write,
+        att = Some(banner)
+      )
+    } yield ()
+  }
 
-    try {
-      val clientSocketChannel = serverSocketChannel.accept()
-      if (clientSocketChannel != null) {
-        clientSocketChannel.configureBlocking(false)
+  private def registerNewClientConn(scope: Managed.Scope, selector: Selector,
+                                    key: SelectionKey, serverSocketChannel: ServerSocketChannel) = {
+    for {
+      // accept a new client connection:
+      _ <- putStrLn("Accepting new client connection...") // TODO: use a proper logger!
+      scopedAccept <- scope(serverSocketChannel.accept)
+      (_, clientSocketChannelOption) = scopedAccept
 
-        // the first thing we'll do (i.e. right after the connection
-        // is established and before the clients sends anything) is
-        // sending a server banner (see "CDDB Protocol Level 1"):
-        println(s"Writing banner to client channel $clientSocketChannel")
-        clientSocketChannel.register(
+      // the first thing we'll do (i.e. right after the connection
+      // is established and before the clients sends anything) is
+      // sending a server banner (see "CDDB Protocol Level 1"):
+      _ <- ZIO.whenCase(clientSocketChannelOption) {
+        case Some(clientChannel) => registerForBannerWriting(
           selector,
-          java.nio.channels.SelectionKey.OP_WRITE,
-          cddbdProtocol.writeBanner()
+          clientChannel
         )
       }
-    } catch {
-      case t: Throwable => println(s"Could not register new client! $t")
-    }
-
-    try {
-      // re-register the server channel to accept new clients:
-      serverSocketChannel.register(
-        selector,
-        java.nio.channels.SelectionKey.OP_ACCEPT
-      )
-    } catch {
-      case t: Throwable => println(s"Could not re-register server channel! $t")
-    }
+    } yield ()
   }
 
   private def readRequest(selector: java.nio.channels.Selector, clientChannel: java.nio.channels.SocketChannel,
                           sessionState: CddbSessionState): Unit = {
     try {
-      val buffer: ByteBuffer = sessionState.buffer.get
+      val buffer: java.nio.ByteBuffer = sessionState.buffer.get
       val i = clientChannel.read(buffer)
 
       if (i < 0) {
@@ -131,7 +137,7 @@ class CddbdServer {
           " channel: could not find channel attachment")
         CddbSessionState(
           protocolLevel = Constants.defaultCddbProtocolLevel,
-          buffer = Some(ByteBuffer.allocate(Constants.defaultRequestBufferSize))
+          buffer = Some(java.nio.ByteBuffer.allocate(Constants.defaultRequestBufferSize))
         )
       }
     } else {
@@ -139,7 +145,43 @@ class CddbdServer {
     }
   }
 
-  private def writeToClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
+  private def toZioBuffer(jBuffer: java.nio.ByteBuffer): zio.ZManaged[Any, IOException, zio.nio.core.ByteBuffer] =
+    Managed.fromEffect {
+      // TODO: this function should be obsolete once all buffer operations use ZIO's wrapper!
+      val fakeBanner = "i am a fake banner i am a fake banneri am a fake banner          "
+      val bytes = Chunk.fromArray(fakeBanner.getBytes)
+      for {
+        buffer <- Buffer.byte(bytes) // TODO: copy jBuffer to buffer instead!
+      } yield (buffer)
+    }
+
+  private def writeToClientConn3(scope: Managed.Scope, selector: Selector,
+                                 key: SelectionKey, clientChannel: SocketChannel) = {
+    for {
+      _ <- putStrLn(s"Writing to client channel $clientChannel...") // TODO: use a proper logger!
+      att <- key.attachment
+      _ <- ZIO.whenCase(att) {
+        case Some(attachment) => {
+          val sessionState: CddbSessionState = attachment.asInstanceOf[CddbSessionState]
+
+          for {
+            scopedBuffer <- scope.apply(toZioBuffer(sessionState.buffer.get))
+            (_, buffer) = scopedBuffer
+            i <- clientChannel.write(buffer)
+            _ <- clientChannel.register(
+              selector,
+              Operation.Read,
+              // TODO: sessionState.copy(buffer = Some(buffer.clear()))
+            )
+            _ <- putStrLn(s"I wrote $i bytes to client channel $clientChannel!") // TODO: use a proper logger!
+
+          } yield ()
+        }
+      }
+    } yield ()
+  }
+
+  /*private def writeToClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
     val clientChannel: java.nio.channels.SocketChannel = key.channel().asInstanceOf[java.nio.channels.SocketChannel]
     key.interestOps(0)
 
@@ -180,98 +222,53 @@ class CddbdServer {
     } catch {
       case t: Throwable => println(s"Could not write to channel! $t")
     }
-  }
+  }*/
 
-  private def consumeSingleKey3(selector: Selector, key: SelectionKey) = //: zio.ZIO[Blocking, Exception, Unit] ?
+  private def consumeSingleKey(scope: Managed.Scope, selector: Selector,
+                               key: SelectionKey) =
     key.matchChannel { readyOps => {
-      case channel: ServerSocketChannel if readyOps(Operation.Accept) =>
+      case serverSocketChannel: ServerSocketChannel if readyOps(Operation.Accept) =>
         for {
-          _ <- channel.close
+          _ <- registerNewClientConn(scope, selector, key, serverSocketChannel)
         } yield ()
-      case client: SocketChannel if readyOps(Operation.Read) =>
-        for {
 
-          _ <- client.close
+      case clientChannel: SocketChannel if readyOps(Operation.Write) =>
+        for {
+          _ <- writeToClientConn3(scope, selector, key, clientChannel)
         } yield ()
+
+      /*case clientChannel: SocketChannel if readyOps(Operation.Read) =>
+        for {
+          _ <- readFromClientConn(selector, key)
+        } yield ()*/
     }
     } *> selector.removeKey(key)
 
-  private def consumeSingleKey(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
-    if (key.isAcceptable) registerNewClientConn(selector, key)
-    if (key.isWritable) writeToClientConn(selector, key)
-    if (key.isReadable) readFromClientConn(selector, key)
-  }
-
-  private def consumeKeys(selector: java.nio.channels.Selector,
-                          selectionKeys: util.Iterator[java.nio.channels.SelectionKey]): Unit = {
-    selectionKeys.forEachRemaining {
-      k => consumeSingleKey(selector, k)
-    }
-  }
-
-  def selectKeys3(scope: Managed.Scope, selector: Selector) = { //: ZIO[Blocking, Exception, Unit] ?
+  private def selectKeys(scope: Managed.Scope, selector: Selector): zio.ZIO[Console, IOException, Unit] = {
     for {
-      _ <- console.putStrLn("Selecting keys...").ignore
       _ <- selector.select
       selectionKeys <- selector.selectedKeys
-      _ <- IO.foreach_(selectionKeys) { k =>
-        consumeSingleKey3(selector, k)
+      _ <- ZIO.foreach_(selectionKeys) { k =>
+        consumeSingleKey(scope, selector, k)
       }
     } yield ()
   }
 
-  private def selectKeys(selector: java.nio.channels.Selector,
-                         serverSocketChannel: java.nio.channels.ServerSocketChannel): Unit = {
-    serverSocketChannel.configureBlocking(false)
-    try {
-      serverSocketChannel.register(
-        selector,
-        java.nio.channels.SelectionKey.OP_ACCEPT
-      )
-    } catch {
-      case t: Throwable => println(s"Could not register ServerSocketChannel for OP_ACCEPT! $t")
-    }
-
-    while (running) { // TODO: use an infinite, tail-recursive loop instead!
-      selector.select()
-      val selectionKeys = selector.selectedKeys().iterator()
-      consumeKeys(selector, selectionKeys)
-    }
-  }
-
-  def bootstrap3(port: Int) = {
+  def bootstrap(port: Int): CddbdServerApp = {
     for {
       scope <- Managed.scope
       selector <- Selector.open
       serverSocketChannel <- ServerSocketChannel.open
       _ <- Managed.fromEffect {
         for {
-          _ <- putStrLn(s"Binding on port $port...")
-          _ <- serverSocketChannel.bindAuto(port)
+          _ <- putStrLn(s"Binding on port $port...") // TODO: use a proper logger!
+          serverSocket <- InetSocketAddress.hostNameResolved("127.0.0.1", port)
+          _ <- serverSocketChannel.bindTo(serverSocket)
           _ <- serverSocketChannel.configureBlocking(false)
           _ <- serverSocketChannel.register(selector, Operation.Accept)
-          _ <- selectKeys3(scope, selector)
+          _ <- selectKeys(scope, selector).repeat(Schedule.forever)
         } yield ()
       }
     } yield ()
-  }
-
-  def bootstrap(port: Int): Either[String, () => Unit] = {
-    try {
-      // create an NIO channel selector and a server socket:
-      val selector = java.nio.channels.Selector.open()
-      val serverSocketChannel = java.nio.channels.ServerSocketChannel.open()
-
-      println(s"Binding on port $port...")
-      serverSocketChannel.bind(
-        new java.net.InetSocketAddress("localhost", port)
-      )
-
-      Right(() => selectKeys(selector, serverSocketChannel))
-    } catch {
-      case e: java.nio.channels.ClosedChannelException => Left(e.getMessage)
-      case e: java.io.IOException => Left(e.getMessage)
-      case t: Throwable => Left(s"Something unexpected happened! $t")
-    }
   }
 }
