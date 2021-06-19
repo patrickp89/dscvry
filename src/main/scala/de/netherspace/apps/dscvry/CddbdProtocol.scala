@@ -1,6 +1,6 @@
 package de.netherspace.apps.dscvry
 
-import java.io.ByteArrayOutputStream
+import java.io.{ByteArrayOutputStream, IOException}
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.time.LocalDateTime
@@ -9,11 +9,17 @@ import java.time.format.DateTimeFormatter
 class CddbdProtocol(val cddbDatabase: CddbDatabase) {
 
   sealed trait CddbProtocolCommand
+
   case class LoginHandshake() extends CddbProtocolCommand
+
   case class ServerProtocolLevelChange() extends CddbProtocolCommand
+
   case class DiscidCalculation() extends CddbProtocolCommand
+
   case class QueryDatabaseWithDiscId() extends CddbProtocolCommand
+
   case class EmptyCommand() extends CddbProtocolCommand
+
   case class UnknownCddbCommand() extends CddbProtocolCommand
 
   private val appName = "Dscvry"
@@ -34,6 +40,36 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     val dtf = DateTimeFormatter.ofPattern(dateTimeFormat)
     val ts = LocalDateTime.now().format(dtf)
     s"$okReadOnlyStatusCode $appName CDDBP server $version ready at $ts\n"
+  }
+
+  def newBuffer(): zio.ZManaged[zio.Has[zio.console.Console.Service], Exception, zio.nio.core.ByteBuffer] = {
+    for {
+      b <- zio.Managed.fromEffect {
+        for {
+          buffer <- zio.nio.core.Buffer.byte(Constants.defaultRequestBufferSize)
+        } yield (buffer)
+      }
+    } yield (b)
+  }
+
+  def writeBanner3(): zio.ZIO[zio.Has[zio.console.Console.Service], Exception, CddbSessionState3] = {
+    val serverBanner = createBanner()
+    val bannerBytes = serverBanner.getBytes(
+      protocolLevelsToCharsets(Constants.defaultCddbProtocolLevel)
+    )
+    val bannerChunk = zio.Chunk.fromArray(bannerBytes)
+    for {
+      sessionState <- newBuffer().use { b =>
+        for {
+          _ <- b.putChunk(bannerChunk)
+        } yield (
+          CddbSessionState3(
+            protocolLevel = Constants.defaultCddbProtocolLevel,
+            buffer = Some(b)
+          )
+          )
+      }
+    } yield (sessionState)
   }
 
   def writeBanner(): CddbSessionState = {

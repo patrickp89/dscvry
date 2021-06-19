@@ -6,3 +6,8 @@ case class CddbSessionState(
      protocolLevel: Int,
      buffer: Option[ByteBuffer]
 )
+
+case class CddbSessionState3(
+     protocolLevel: Int,
+     buffer: Option[zio.nio.core.ByteBuffer]
+)

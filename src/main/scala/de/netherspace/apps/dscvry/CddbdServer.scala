@@ -16,13 +16,12 @@ import java.util
 
 type CddbdServerApp = zio.ZManaged[
   zio.Has[zio.console.Console.Service] & zio.Has[zio.clock.Clock.Service],
-  IOException,
+  Exception,
   Unit
 ]
 
 class CddbdServer {
 
-  private val running = true
   private val cddbdProtocol = new CddbdProtocol(new CddbDatabase())
 
   private def sendResponse(selector: java.nio.channels.Selector, clientChannel: java.nio.channels.SocketChannel,
@@ -39,11 +38,9 @@ class CddbdServer {
   }
 
   private def registerForBannerWriting(selector: Selector, clientChannel: SocketChannel) = {
-    // assemble the banner:
-    val banner = cddbdProtocol.writeBanner()
     for {
       _ <- putStrLn(s"Writing banner to client channel $clientChannel") // TODO: use a proper logger!
-      // and register the NIO key for writing it:
+      banner <- cddbdProtocol.writeBanner3()
       _ <- clientChannel.configureBlocking(false)
         *> clientChannel.register(
         selector,
@@ -53,8 +50,8 @@ class CddbdServer {
     } yield ()
   }
 
-  private def registerNewClientConn(scope: Managed.Scope, selector: Selector,
-                                    key: SelectionKey, serverSocketChannel: ServerSocketChannel) = {
+  private def registerNewClientConn(scope: Managed.Scope, selector: Selector, key: SelectionKey,
+                                    serverSocketChannel: ServerSocketChannel): ZIO[Console, Exception, Unit] = {
     for {
       // accept a new client connection:
       _ <- putStrLn("Accepting new client connection...") // TODO: use a proper logger!
@@ -112,7 +109,40 @@ class CddbdServer {
     }
   }
 
-  private def readFromClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
+
+  private def readFromClientConn3(scope: Managed.Scope, selector: Selector, key: SelectionKey,
+                                  clientChannel: SocketChannel): ZIO[Console, Exception, Unit] = {
+    for {
+      _ <- putStrLn(s"Key $key is readable...") // TODO: use a proper logger!
+      att <- key.attachment
+      buffer <- cddbdProtocol.newBuffer().use { b => // TODO: use unwrapBufferOrNew(scope, att)
+        for {
+          clientChannelIsConnected <- clientChannel.isConnected
+          clientChannelIsOpen <- clientChannel.isOpen
+          _ <- ZIO.when(clientChannelIsConnected && clientChannelIsOpen) {
+            for {
+              _ <- putStrLn(s"Reading from client channel $clientChannel...") // TODO: use a proper logger!
+              i <- ZIO.succeed(-1) // TODO: clientChannel.read(buffer)
+              _ <- putStrLn(s"I read $i bytes from client channel $clientChannel!") // TODO: use a proper logger!
+              _ <- ZIO.when(i < 0) {
+                for {
+                  _ <- clientChannel.close
+                } yield ()
+              }
+            } yield ()
+          }
+        } yield (b)
+      }
+
+      /*_ <- clientChannel.register(
+        selector,
+        Operation.Write,
+        // TODO: sessionState.copy(buffer = Some(buffer.clear()))
+      )*/
+    } yield ()
+  }
+
+  /*private def readFromClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
     val clientChannel: java.nio.channels.SocketChannel = key.channel().asInstanceOf[java.nio.channels.SocketChannel]
     key.interestOps(0)
 
@@ -143,38 +173,28 @@ class CddbdServer {
     } else {
       println("Client channel is not connected!")
     }
-  }
+  }*/
 
-  private def toZioBuffer(jBuffer: java.nio.ByteBuffer): zio.ZManaged[Any, IOException, zio.nio.core.ByteBuffer] =
-    Managed.fromEffect {
-      // TODO: this function should be obsolete once all buffer operations use ZIO's wrapper!
-      val fakeBanner = "i am a fake banner i am a fake banneri am a fake banner          "
-      val bytes = Chunk.fromArray(fakeBanner.getBytes)
-      for {
-        buffer <- Buffer.byte(bytes) // TODO: copy jBuffer to buffer instead!
-      } yield (buffer)
-    }
 
-  private def writeToClientConn3(scope: Managed.Scope, selector: Selector,
-                                 key: SelectionKey, clientChannel: SocketChannel) = {
+  private def writeToClientConn3(scope: Managed.Scope, selector: Selector, key: SelectionKey,
+                                 clientChannel: SocketChannel): ZIO[Console, IOException, Unit] = {
     for {
       _ <- putStrLn(s"Writing to client channel $clientChannel...") // TODO: use a proper logger!
       att <- key.attachment
       _ <- ZIO.whenCase(att) {
         case Some(attachment) => {
-          val sessionState: CddbSessionState = attachment.asInstanceOf[CddbSessionState]
-
+          val sessionState: CddbSessionState3 = attachment.asInstanceOf[CddbSessionState3]
           for {
-            scopedBuffer <- scope.apply(toZioBuffer(sessionState.buffer.get))
-            (_, buffer) = scopedBuffer
-            i <- clientChannel.write(buffer)
+            _ <- sessionState.buffer.get.flip
+            i <- clientChannel.write(
+              sessionState.buffer.get
+            )
             _ <- clientChannel.register(
               selector,
               Operation.Read,
               // TODO: sessionState.copy(buffer = Some(buffer.clear()))
             )
             _ <- putStrLn(s"I wrote $i bytes to client channel $clientChannel!") // TODO: use a proper logger!
-
           } yield ()
         }
       }
@@ -225,7 +245,7 @@ class CddbdServer {
   }*/
 
   private def consumeSingleKey(scope: Managed.Scope, selector: Selector,
-                               key: SelectionKey) =
+                               key: SelectionKey): ZIO[Console, Exception, Unit] =
     key.matchChannel { readyOps => {
       case serverSocketChannel: ServerSocketChannel if readyOps(Operation.Accept) =>
         for {
@@ -237,14 +257,15 @@ class CddbdServer {
           _ <- writeToClientConn3(scope, selector, key, clientChannel)
         } yield ()
 
-      /*case clientChannel: SocketChannel if readyOps(Operation.Read) =>
+      case clientChannel: SocketChannel if readyOps(Operation.Read) =>
         for {
-          _ <- readFromClientConn(selector, key)
-        } yield ()*/
+          _ <- readFromClientConn3(scope, selector, key, clientChannel)
+        } yield ()
     }
     } *> selector.removeKey(key)
 
-  private def selectKeys(scope: Managed.Scope, selector: Selector): zio.ZIO[Console, IOException, Unit] = {
+
+  private def selectKeys(scope: Managed.Scope, selector: Selector): zio.ZIO[Console, Exception, Unit] = {
     for {
       _ <- selector.select
       selectionKeys <- selector.selectedKeys
@@ -253,6 +274,7 @@ class CddbdServer {
       }
     } yield ()
   }
+
 
   def bootstrap(port: Int): CddbdServerApp = {
     for {
