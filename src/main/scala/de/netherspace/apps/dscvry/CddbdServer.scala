@@ -2,7 +2,7 @@ package de.netherspace.apps.dscvry
 
 import zio._
 import zio.blocking.Blocking
-import zio.clock.Clock
+import zio.clock._
 import zio.console._
 import zio.duration._
 import zio.nio.core.channels.SelectionKey.Operation
@@ -14,8 +14,8 @@ import java.io.{ByteArrayOutputStream, IOException}
 import java.nio.charset.StandardCharsets
 import java.util
 
-type CddbdServerApp = zio.ZManaged[
-  zio.Has[zio.console.Console.Service] & zio.Has[zio.clock.Clock.Service],
+type CddbdServerApp = ZManaged[
+  Has[Console.Service] & Has[Clock.Service],
   Exception,
   Unit
 ]
@@ -24,28 +24,15 @@ class CddbdServer {
 
   private val cddbdProtocol = new CddbdProtocol(new CddbDatabase())
 
-  private def sendResponse(selector: java.nio.channels.Selector, clientChannel: java.nio.channels.SocketChannel,
-                           newSessionState: CddbSessionState): Unit = {
-    try {
-      clientChannel.register(
-        selector,
-        java.nio.channels.SelectionKey.OP_WRITE,
-        newSessionState
-      )
-    } catch {
-      case t: Throwable => println(s"Could not register client channel for OP_WRITE! $t")
-    }
-  }
-
   private def registerForBannerWriting(selector: Selector, clientChannel: SocketChannel) = {
     for {
       _ <- putStrLn(s"Writing banner to client channel $clientChannel") // TODO: use a proper logger!
-      banner <- cddbdProtocol.writeBanner3()
+      initialSessionState <- cddbdProtocol.createInitialSessionState()
       _ <- clientChannel.configureBlocking(false)
-        *> clientChannel.register(
+      _ <- clientChannel.register(
         selector,
         Operation.Write,
-        att = Some(banner)
+        att = Some(initialSessionState)
       )
     } yield ()
   }
@@ -70,179 +57,123 @@ class CddbdServer {
     } yield ()
   }
 
-  private def readRequest(selector: java.nio.channels.Selector, clientChannel: java.nio.channels.SocketChannel,
-                          sessionState: CddbSessionState): Unit = {
-    try {
-      val buffer: java.nio.ByteBuffer = sessionState.buffer.get
-      val i = clientChannel.read(buffer)
 
-      if (i < 0) {
-        println(s"I read $i bytes from buffer!")
-        clientChannel.close()
+  private def readRequest(selector: Selector, clientChannel: SocketChannel,
+                           sessionState: CddbSessionState3, buffer: ByteBuffer): ZIO[Console, Exception, Unit] = {
+    for {
+      _ <- buffer.flip
 
-      } else if (i > 0) {
-        println(s"I read $i bytes from buffer!")
-        buffer.flip()
-        val rawBytes = new ByteArrayOutputStream()
-        while (buffer.hasRemaining) {
-          val content = new Array[Byte](buffer.remaining())
-          try {
-            buffer.get(content)
-            rawBytes.write(content)
-          } catch {
-            case t: Throwable => println(s"Could not read from client channel! $t")
-          }
-        }
-        println(s"I read: '${rawBytes.toString(StandardCharsets.UTF_8)}'")
+      remaining <- buffer.remaining
+      _ <- putStrLn(s"buffer.remaining = $remaining") // TODO: use a proper logger.trace()
 
-        // handle the request!
-        val newSessionState = cddbdProtocol.handleRequest(
-          rawBytes,
-          sessionState.copy(buffer = Some(buffer))
-        )
+      requestChunk <- buffer.getChunk(remaining)
+      _ <- putStrLn(s"buffer.getChunk(remaining) = $requestChunk") // TODO: use a proper logger.trace()
 
-        // send the response back to the client:
-        sendResponse(selector, clientChannel, newSessionState)
-      }
-    } catch {
-      case t: Throwable => println(s"Could not read from server channel! $t")
-    }
+      // handle the request!
+      newSessionState <- cddbdProtocol.handleRequest3(requestChunk, sessionState)
+
+      // send the response back to the client:
+      _ <- clientChannel.register(
+        selector,
+        Operation.Write,
+        att = Some(newSessionState)
+      )
+    } yield ()
   }
 
 
-  private def readFromClientConn3(scope: Managed.Scope, selector: Selector, key: SelectionKey,
+  private def extractSessionState(att: Option[AnyRef]): ZIO[Any, Exception, CddbSessionState3] = {
+    val optionalSessionState: Option[CddbSessionState3] = att.map {
+      (attachment: AnyRef) => attachment.asInstanceOf[CddbSessionState3]
+    }
+    ZIO.fromOption(optionalSessionState).mapError(_ => Exception("No attachment found!"))
+  }
+
+
+  private def readFromClientConn(scope: Managed.Scope, selector: Selector, key: SelectionKey,
                                   clientChannel: SocketChannel): ZIO[Console, Exception, Unit] = {
     for {
-      _ <- putStrLn(s"Key $key is readable...") // TODO: use a proper logger!
+      // TODO: _ <- putStrLn(s"Key $key is readable...") // TODO: use a proper logger.trace()
       att <- key.attachment
-      buffer <- cddbdProtocol.newBuffer().use { b => // TODO: use unwrapBufferOrNew(scope, att)
+      sessionState <- extractSessionState(att)
+      buffer <- cddbdProtocol.newBuffer(None).use { b =>
         for {
           clientChannelIsConnected <- clientChannel.isConnected
           clientChannelIsOpen <- clientChannel.isOpen
           _ <- ZIO.when(clientChannelIsConnected && clientChannelIsOpen) {
             for {
-              _ <- putStrLn(s"Reading from client channel $clientChannel...") // TODO: use a proper logger!
-              i <- ZIO.succeed(-1) // TODO: clientChannel.read(buffer)
-              _ <- putStrLn(s"I read $i bytes from client channel $clientChannel!") // TODO: use a proper logger!
+              // TODO: _ <- putStrLn(s"Reading from client channel $clientChannel...") // TODO: use a proper logger.trace()
+
+              i <- clientChannel.read(b).catchSome {
+                case _: java.io.EOFException => ZIO.succeed(0)
+              }
+              // TODO: _ <- putStrLn(s"I read $i bytes from client channel $clientChannel!") // TODO: use a proper logger.trace()
+
+              // the client closed the connection:
               _ <- ZIO.when(i < 0) {
                 for {
                   _ <- clientChannel.close
                 } yield ()
               }
+
+              // the client did not close the connection but sent 0 bytes:
+              _ <- ZIO.when(i == 0) {
+                for {
+                  _ <- clientChannel.register(
+                    selector,
+                    Operation.Read,
+                    att = Some(
+                      sessionState.copy(buffer = Some(sessionState.buffer.get))
+                    )
+                  )
+                } yield ()
+              }
+
+              // we did receive some bytes:
+              _ <- ZIO.when(i > 0) {
+                for {
+                  _ <- readRequest(selector, clientChannel, sessionState, b)
+                } yield ()
+              }
+
             } yield ()
           }
         } yield (b)
       }
-
-      /*_ <- clientChannel.register(
-        selector,
-        Operation.Write,
-        // TODO: sessionState.copy(buffer = Some(buffer.clear()))
-      )*/
     } yield ()
   }
 
-  /*private def readFromClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
-    val clientChannel: java.nio.channels.SocketChannel = key.channel().asInstanceOf[java.nio.channels.SocketChannel]
-    key.interestOps(0)
 
-    // is the client channel still connected?
-    if (clientChannel.isConnected) {
-
-      // is there an attachment attached to this client channel?
-      val attachment = key.attachment()
-      if (attachment != null) {
-
-        // yes, lets check for the buffer:
-        val sessionState: CddbSessionState = attachment.asInstanceOf[CddbSessionState]
-        sessionState.buffer match {
-          case Some(_) =>
-            // now we have a valid CddbSessionState, let's read some bytes:
-            readRequest(selector, clientChannel, sessionState)
-          case None => println("CddbSessionState.Buffer was None when trying to read a request!")
-        }
-      } else {
-        // there is no attachment - this should never happen!
-        println("Something unexpected happened when reading from a client" +
-          " channel: could not find channel attachment")
-        CddbSessionState(
-          protocolLevel = Constants.defaultCddbProtocolLevel,
-          buffer = Some(java.nio.ByteBuffer.allocate(Constants.defaultRequestBufferSize))
-        )
-      }
-    } else {
-      println("Client channel is not connected!")
-    }
-  }*/
-
-
-  private def writeToClientConn3(scope: Managed.Scope, selector: Selector, key: SelectionKey,
-                                 clientChannel: SocketChannel): ZIO[Console, IOException, Unit] = {
+  private def writeToClientConn(scope: Managed.Scope, selector: Selector, key: SelectionKey,
+                                 clientChannel: SocketChannel): ZIO[Console, Exception, Unit] = {
     for {
       _ <- putStrLn(s"Writing to client channel $clientChannel...") // TODO: use a proper logger!
       att <- key.attachment
-      _ <- ZIO.whenCase(att) {
-        case Some(attachment) => {
-          val sessionState: CddbSessionState3 = attachment.asInstanceOf[CddbSessionState3]
-          for {
-            _ <- sessionState.buffer.get.flip
-            i <- clientChannel.write(
-              sessionState.buffer.get
-            )
-            _ <- clientChannel.register(
-              selector,
-              Operation.Read,
-              // TODO: sessionState.copy(buffer = Some(buffer.clear()))
-            )
-            _ <- putStrLn(s"I wrote $i bytes to client channel $clientChannel!") // TODO: use a proper logger!
-          } yield ()
-        }
-      }
+      sessionState <- extractSessionState(att)
+      _ <- sessionState.buffer.get.flip
+
+      remaining <- sessionState.buffer.get.remaining
+      _ <- putStrLn(s"buffer.remaining = $remaining") // TODO: use a proper logger.trace()
+
+      dupl <- sessionState.buffer.get.duplicate
+      requestChunk <- dupl.getChunk(remaining)
+      _ <- putStrLn(s"buffer.getChunk(remaining) = $requestChunk") // TODO: use a proper logger.trace()
+
+      i <- clientChannel.write(
+        sessionState.buffer.get
+      )
+      _ <- sessionState.buffer.get.clear
+      _ <- clientChannel.register(
+        selector,
+        Operation.Read,
+        att = Some(
+          sessionState.copy(buffer = Some(sessionState.buffer.get))
+        )
+      )
+      _ <- putStrLn(s"I wrote $i bytes to client channel $clientChannel!") // TODO: use a proper logger!
     } yield ()
   }
 
-  /*private def writeToClientConn(selector: java.nio.channels.Selector, key: java.nio.channels.SelectionKey): Unit = {
-    val clientChannel: java.nio.channels.SocketChannel = key.channel().asInstanceOf[java.nio.channels.SocketChannel]
-    key.interestOps(0)
-
-    try {
-      if (clientChannel.isConnected) {
-        val attachment = key.attachment()
-        if (attachment != null) {
-          val sessionState: CddbSessionState = attachment.asInstanceOf[CddbSessionState]
-
-          sessionState.buffer match {
-            case Some(buffer) => {
-              buffer.flip()
-              while (buffer.hasRemaining) {
-                val i = clientChannel.write(buffer)
-                println(s"I wrote $i bytes to client channel $clientChannel!")
-              }
-
-              clientChannel.register(
-                selector,
-                java.nio.channels.SelectionKey.OP_READ,
-                sessionState.copy(buffer = Some(buffer.clear()))
-              )
-            }
-            case None => println("CddbSessionState.Buffer was None when trying to write a response!")
-          }
-
-        } else {
-          // there is no attachment - this should never happen!
-          println("Something unexpected happened when writing to a client" +
-            " channel: could not find channel attachment")
-          clientChannel.register(
-            selector,
-            java.nio.channels.SelectionKey.OP_READ,
-            CddbSessionState(Constants.defaultCddbProtocolLevel, None)
-          )
-        }
-      }
-    } catch {
-      case t: Throwable => println(s"Could not write to channel! $t")
-    }
-  }*/
 
   private def consumeSingleKey(scope: Managed.Scope, selector: Selector,
                                key: SelectionKey): ZIO[Console, Exception, Unit] =
@@ -254,12 +185,12 @@ class CddbdServer {
 
       case clientChannel: SocketChannel if readyOps(Operation.Write) =>
         for {
-          _ <- writeToClientConn3(scope, selector, key, clientChannel)
+          _ <- writeToClientConn(scope, selector, key, clientChannel)
         } yield ()
 
       case clientChannel: SocketChannel if readyOps(Operation.Read) =>
         for {
-          _ <- readFromClientConn3(scope, selector, key, clientChannel)
+          _ <- readFromClientConn(scope, selector, key, clientChannel)
         } yield ()
     }
     } *> selector.removeKey(key)

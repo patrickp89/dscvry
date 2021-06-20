@@ -63,7 +63,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     banner should startWith("201 Dscvry CDDBP server v0.0.1 ready at ")
   }
 
-  /*it should "respond with hello and welcome to finish the handshake" in {
+  it should "respond with hello and welcome to finish the handshake" in {
     val clientSocket = openNewClientConn()
     val out = clientSocket.getOutputStream
     val isr = new InputStreamReader(clientSocket.getInputStream)
@@ -93,7 +93,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     handshakeResponse should be("200 Hello and welcome anonymous running testclient 0.0.1\n")
   }
 
-  it should "allow clients to set a CDDB protocol level" in {
+  /*it should "allow clients to set a CDDB protocol level" in {
     val clientSocket = openNewClientConn()
     val out = clientSocket.getOutputStream
     val isr = new InputStreamReader(clientSocket.getInputStream)

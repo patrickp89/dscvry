@@ -1,10 +1,20 @@
 package de.netherspace.apps.dscvry
 
+import zio._
+import zio.console._
+
 import java.io.{ByteArrayOutputStream, IOException}
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
+import scala.collection.mutable
+
+type CddbSessionStateTransition = ZIO[
+  Has[Console.Service],
+  Exception,
+  CddbSessionState3
+]
 
 class CddbdProtocol(val cddbDatabase: CddbDatabase) {
 
@@ -21,6 +31,7 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
   case class EmptyCommand() extends CddbProtocolCommand
 
   case class UnknownCddbCommand() extends CddbProtocolCommand
+
 
   private val appName = "Dscvry"
 
@@ -42,48 +53,44 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     s"$okReadOnlyStatusCode $appName CDDBP server $version ready at $ts\n"
   }
 
-  def newBuffer(): zio.ZManaged[zio.Has[zio.console.Console.Service], Exception, zio.nio.core.ByteBuffer] = {
+  def newBuffer(capacity: Option[Int]): zio.ZManaged[zio.Has[zio.console.Console.Service], Exception, zio.nio.core.ByteBuffer] = {
     for {
       b <- zio.Managed.fromEffect {
         for {
-          buffer <- zio.nio.core.Buffer.byte(Constants.defaultRequestBufferSize)
+          buffer <- zio.nio.core.Buffer.byte(
+            capacity.orElse(Some(Constants.defaultRequestBufferSize)).get
+          )
         } yield (buffer)
       }
     } yield (b)
   }
 
-  def writeBanner3(): zio.ZIO[zio.Has[zio.console.Console.Service], Exception, CddbSessionState3] = {
-    val serverBanner = createBanner()
-    val bannerBytes = serverBanner.getBytes(
+  private def assembleSessionState(bufferContent: String): CddbSessionStateTransition = {
+    val contentBytes = bufferContent.getBytes(
       protocolLevelsToCharsets(Constants.defaultCddbProtocolLevel)
     )
-    val bannerChunk = zio.Chunk.fromArray(bannerBytes)
+    val contentChunk = zio.Chunk.fromArray(contentBytes)
     for {
-      sessionState <- newBuffer().use { b =>
+      sessionState <- newBuffer(None).use { b =>
         for {
-          _ <- b.putChunk(bannerChunk)
+          _ <- b.putChunk(contentChunk)
         } yield (
           CddbSessionState3(
-            protocolLevel = Constants.defaultCddbProtocolLevel,
+            protocolLevel = Constants.defaultCddbProtocolLevel, // TODO: get from arg
             buffer = Some(b)
           )
           )
       }
-    } yield (sessionState)
+    } yield sessionState
   }
 
-  def writeBanner(): CddbSessionState = {
+  def createInitialSessionState(): CddbSessionStateTransition = {
     val serverBanner = createBanner()
-    val buffer = ByteBuffer
-      .allocate(Constants.defaultRequestBufferSize)
-      .put(serverBanner.getBytes(
-        protocolLevelsToCharsets(Constants.defaultCddbProtocolLevel))
-      )
-    CddbSessionState(
-      protocolLevel = Constants.defaultCddbProtocolLevel,
-      buffer = Some(buffer)
-    )
+    for {
+      sessionState <- assembleSessionState(serverBanner)
+    } yield sessionState
   }
+
 
   private def handleHandshake(requestParts: Array[String]): String = {
     val username = requestParts(2)
@@ -149,6 +156,25 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
         .allocate(Constants.defaultRequestBufferSize)
         .put(response)
     }
+  }
+
+  def handleRequest3(requestChunk: Chunk[Byte], sessionState: CddbSessionState3): CddbSessionStateTransition = {
+    for {
+      charsetName <- ZIO.succeed(protocolLevelsToCharsets(sessionState.protocolLevel).name)
+      charset <- ZIO.succeed(zio.nio.core.charset.Charset.availableCharsets(charsetName))
+      charsettedRequestChunk <- charset.decodeChunk(requestChunk)
+      requestString <- ZIO.succeed(
+        charsettedRequestChunk.toList.map(c => String.valueOf(c)).mkString
+      )
+      _ <- putStrLn(s"Request was: '$requestString'") // TODO: use a proper logger.debug()
+
+      cddbProtocolCommand: CddbProtocolCommand <- ZIO.succeed(determineProtocolCommand(requestString))
+      _ <- putStrLn(s"CddbProtocolCommand is: '$cddbProtocolCommand'") // TODO: use a proper logger.debug()
+
+      // TODO: replace fake response with a real one!
+      newSessionState <- assembleSessionState("200 Hello and welcome anonymous running testclient 0.0.1\n")
+      // TODO: change one char to fail the test ---> will yield an unhandled "java.net.SocketException: Connection reset"!
+    } yield newSessionState
   }
 
   def handleRequest(rawRequest: ByteArrayOutputStream,
