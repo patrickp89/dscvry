@@ -50,44 +50,29 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     val dateTimeFormat = "EEE LLL dd HH:mm:ss yyyy"
     val dtf = DateTimeFormatter.ofPattern(dateTimeFormat)
     val ts = LocalDateTime.now().format(dtf)
-    s"$okReadOnlyStatusCode $appName CDDBP server $version ready at $ts\n"
+    s"$okReadOnlyStatusCode $appName CDDBP server $version ready at $ts"
   }
 
-  def newBuffer(capacity: Option[Int]): zio.ZManaged[zio.Has[zio.console.Console.Service], Exception, zio.nio.core.ByteBuffer] = {
-    for {
-      b <- zio.Managed.fromEffect {
-        for {
-          buffer <- zio.nio.core.Buffer.byte(
-            capacity.orElse(Some(Constants.defaultRequestBufferSize)).get
-          )
-        } yield (buffer)
-      }
-    } yield (b)
-  }
 
-  private def assembleSessionState(bufferContent: String): CddbSessionStateTransition = {
-    val contentBytes = bufferContent.getBytes(
-      protocolLevelsToCharsets(Constants.defaultCddbProtocolLevel)
+  private def assembleSessionState(bufferContent: String,
+                                   newProtoLevel: Int): CddbSessionStateTransition = {
+    // add a linebreak to every response:
+    val contentBytes = s"$bufferContent\n".getBytes(
+      // ...and use the charset corresponding the CDDB protocol level:
+      protocolLevelsToCharsets(newProtoLevel)
     )
     val contentChunk = zio.Chunk.fromArray(contentBytes)
     for {
-      sessionState <- newBuffer(None).use { b =>
+      sessionState <- BufferUtils.newBuffer(None).use { b =>
         for {
           _ <- b.putChunk(contentChunk)
         } yield (
           CddbSessionState3(
-            protocolLevel = Constants.defaultCddbProtocolLevel, // TODO: get from arg
+            protocolLevel = newProtoLevel,
             buffer = Some(b)
           )
           )
       }
-    } yield sessionState
-  }
-
-  def createInitialSessionState(): CddbSessionStateTransition = {
-    val serverBanner = createBanner()
-    for {
-      sessionState <- assembleSessionState(serverBanner)
     } yield sessionState
   }
 
@@ -103,7 +88,6 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
   private def setCddbProtocolLevel(requestParts: Array[String]): (Int, String) = {
     val illegalProtoLevel = "501 Illegal protocol level"
     val newProtoLevel = requestParts(1)
-    // TODO: check, whether newProtoLevel is a valid CDDB protocol level!
     try {
       val newIntProtoLevel = newProtoLevel.toInt
       if (newIntProtoLevel > 0 && newIntProtoLevel <= 6) {
@@ -132,6 +116,7 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     "stub"
   }
 
+
   private def determineProtocolCommand(request: String): CddbProtocolCommand = {
     // commands can be written lower case:
     val cmd = request.toLowerCase
@@ -145,47 +130,13 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     UnknownCddbCommand()
   }
 
-  private def writeResponseToBuffer(buffer: Option[ByteBuffer],
-                                    response: Array[Byte]): ByteBuffer = {
-    buffer match {
-      case Some(buffer) => buffer
-        .clear()
-        .put(response)
 
-      case None => ByteBuffer
-        .allocate(Constants.defaultRequestBufferSize)
-        .put(response)
-    }
-  }
-
-  def handleRequest3(requestChunk: Chunk[Byte], sessionState: CddbSessionState3): CddbSessionStateTransition = {
-    for {
-      charsetName <- ZIO.succeed(protocolLevelsToCharsets(sessionState.protocolLevel).name)
-      charset <- ZIO.succeed(zio.nio.core.charset.Charset.availableCharsets(charsetName))
-      charsettedRequestChunk <- charset.decodeChunk(requestChunk)
-      requestString <- ZIO.succeed(
-        charsettedRequestChunk.toList.map(c => String.valueOf(c)).mkString
-      )
-      _ <- putStrLn(s"Request was: '$requestString'") // TODO: use a proper logger.debug()
-
-      cddbProtocolCommand: CddbProtocolCommand <- ZIO.succeed(determineProtocolCommand(requestString))
-      _ <- putStrLn(s"CddbProtocolCommand is: '$cddbProtocolCommand'") // TODO: use a proper logger.debug()
-
-      // TODO: replace fake response with a real one!
-      newSessionState <- assembleSessionState("200 Hello and welcome anonymous running testclient 0.0.1\n")
-      // TODO: change one char to fail the test ---> will yield an unhandled "java.net.SocketException: Connection reset"!
-    } yield newSessionState
-  }
-
-  def handleRequest(rawRequest: ByteArrayOutputStream,
-                    sessionState: CddbSessionState): CddbSessionState = {
-    val request = rawRequest.toString(protocolLevelsToCharsets(sessionState.protocolLevel))
-
+  private def processCddbCommand(cddbProtocolCommand: CddbProtocolCommand, request: String,
+                                 oldSessionState: CddbSessionState3): ZIO[Console, Exception, Tuple2[Int, String]] = {
     val requestParts = request.split(" ")
-    var newProtoLevel = sessionState.protocolLevel
+    var newProtoLevel = oldSessionState.protocolLevel
 
-    // handle all possible commands:
-    val response: String = determineProtocolCommand(request) match {
+    val response: String = cddbProtocolCommand match {
       case LoginHandshake() => handleHandshake(requestParts)
       case ServerProtocolLevelChange() => {
         val (pl, resp) = setCddbProtocolLevel(requestParts)
@@ -196,16 +147,46 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
       case QueryDatabaseWithDiscId() => queryDatabase(requestParts)
       case EmptyCommand() => "error" // TODO: proper error response?
       case _ =>
-        println("An unknown command was sent!")
+        // TODO: println("An unknown command was sent!")
         "error" // TODO: proper error response?
     }
-    val charset = protocolLevelsToCharsets(newProtoLevel)
-    val bytes: Array[Byte] = s"$response\n".getBytes(charset)
+    for {
+      result <- ZIO.succeed((newProtoLevel, response))
+    } yield result
+  }
 
-    println(s"Response is ${bytes.length} bytes long!")
-    sessionState.copy(
-      protocolLevel = newProtoLevel,
-      buffer = Some(writeResponseToBuffer(sessionState.buffer, bytes))
-    )
+
+  def createInitialSessionState(): CddbSessionStateTransition = {
+    val serverBanner = createBanner()
+    for {
+      sessionState <- assembleSessionState(
+        serverBanner,
+        Constants.defaultCddbProtocolLevel
+      )
+    } yield sessionState
+  }
+
+
+  def handleRequest3(requestChunk: Chunk[Byte], oldSessionState: CddbSessionState3): CddbSessionStateTransition = {
+    for {
+      // apply the charset from the given session to our request chunk:
+      charsetName <- ZIO.succeed(protocolLevelsToCharsets(oldSessionState.protocolLevel).name)
+      charset <- ZIO.succeed(zio.nio.core.charset.Charset.availableCharsets(charsetName))
+      charsettedRequestChunk <- charset.decodeChunk(requestChunk)
+      requestString <- ZIO.succeed(
+        charsettedRequestChunk.toList.map(c => String.valueOf(c)).mkString
+      )
+      _ <- putStrLn(s"Request was: '$requestString'") // TODO: use a proper logger.debug()
+
+      // determine what should be done:
+      cddbProtocolCommand: CddbProtocolCommand <- ZIO.succeed(determineProtocolCommand(requestString))
+      _ <- putStrLn(s"CddbProtocolCommand is: '$cddbProtocolCommand'") // TODO: use a proper logger.debug()
+
+      // ...and do it:
+      result <- processCddbCommand(cddbProtocolCommand, requestString, oldSessionState)
+      (newProtoLevel, response) = result
+
+      newSessionState <- assembleSessionState(response, newProtoLevel)
+    } yield newSessionState
   }
 }

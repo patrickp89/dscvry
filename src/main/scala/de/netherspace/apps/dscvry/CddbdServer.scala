@@ -59,7 +59,7 @@ class CddbdServer {
 
 
   private def readRequest(selector: Selector, clientChannel: SocketChannel,
-                           sessionState: CddbSessionState3, buffer: ByteBuffer): ZIO[Console, Exception, Unit] = {
+                          sessionState: CddbSessionState3, buffer: ByteBuffer): ZIO[Console, Exception, Unit] = {
     for {
       _ <- buffer.flip
 
@@ -91,12 +91,12 @@ class CddbdServer {
 
 
   private def readFromClientConn(scope: Managed.Scope, selector: Selector, key: SelectionKey,
-                                  clientChannel: SocketChannel): ZIO[Console, Exception, Unit] = {
+                                 clientChannel: SocketChannel): ZIO[Console, Exception, Unit] = {
     for {
       // TODO: _ <- putStrLn(s"Key $key is readable...") // TODO: use a proper logger.trace()
       att <- key.attachment
       sessionState <- extractSessionState(att)
-      buffer <- cddbdProtocol.newBuffer(None).use { b =>
+      buffer <- BufferUtils.newBuffer(None).use { b =>
         for {
           clientChannelIsConnected <- clientChannel.isConnected
           clientChannelIsOpen <- clientChannel.isOpen
@@ -104,8 +104,10 @@ class CddbdServer {
             for {
               // TODO: _ <- putStrLn(s"Reading from client channel $clientChannel...") // TODO: use a proper logger.trace()
 
+              // read from the client and handle (some) exceptions gracefully:
               i <- clientChannel.read(b).catchSome {
                 case _: java.io.EOFException => ZIO.succeed(0)
+                case _: java.net.SocketException => ZIO.succeed(-1)
               }
               // TODO: _ <- putStrLn(s"I read $i bytes from client channel $clientChannel!") // TODO: use a proper logger.trace()
 
@@ -145,7 +147,7 @@ class CddbdServer {
 
 
   private def writeToClientConn(scope: Managed.Scope, selector: Selector, key: SelectionKey,
-                                 clientChannel: SocketChannel): ZIO[Console, Exception, Unit] = {
+                                clientChannel: SocketChannel): ZIO[Console, Exception, Unit] = {
     for {
       _ <- putStrLn(s"Writing to client channel $clientChannel...") // TODO: use a proper logger!
       att <- key.attachment

@@ -89,6 +89,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     sb.length() should be > 0
     val handshakeResponse = sb.toString()
 
+    println(s"Server handshake response: '$handshakeResponse'")
     handshakeResponse.length should be(expResponseLength)
     handshakeResponse should be("200 Hello and welcome anonymous running testclient 0.0.1\n")
   }
@@ -195,7 +196,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     val clientSocket = openNewClientConn()
     val isr = new InputStreamReader(clientSocket.getInputStream)
 
-    // read less then the expected banner length:
+    // read LESS then the expected banner length:
     val l = expBannerLength - 10
     for (_ <- Seq.range(0, l)) {
       val c = isr.read()
@@ -209,10 +210,41 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     executor.isEmpty should be(false)
     executor.get.isShutdown should be(false)
 
-    // can we connect a new client conn?
+    // can we connect a new client?
     val clientSocket2 = openNewClientConn()
     clientSocket2.isConnected should be(true)
     clientSocket2.isClosed should be(false)
+    clientSocket2.close()
+  }
+
+  it should "keep running when a client resets its connection" in {
+    // open a connection:
+    val clientSocket = openNewClientConn()
+    val isr = new InputStreamReader(clientSocket.getInputStream)
+
+    // try to read MORE then the expected banner length:
+    val l = expBannerLength + 10
+    try {
+      for (_ <- Seq.range(0, l)) {
+        val c = isr.read()
+      }
+    } catch {
+      case _: java.net.SocketTimeoutException => () // this is meant to happen!
+    }
+
+    // close the connection:
+    isr.close()
+    clientSocket.close()
+
+    // is the server still up and running?
+    executor.isEmpty should be(false)
+    executor.get.isShutdown should be(false)
+
+    // can we connect a new client?
+    val clientSocket2 = openNewClientConn()
+    clientSocket2.isConnected should be(true)
+    clientSocket2.isClosed should be(false)
+    clientSocket2.close()
   }
 
   override def afterAll(): Unit = {
