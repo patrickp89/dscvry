@@ -14,3 +14,8 @@ Create test coverage reports by running:
 ```bash
 $ sbt coverage test coverageReport
 ```
+
+Or via jacoco:
+```bash
+$ sbt jacoco
+```

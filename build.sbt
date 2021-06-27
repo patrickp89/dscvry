@@ -12,10 +12,11 @@ lazy val root = project
 
     libraryDependencies ++= Seq(
       "dev.zio" %% "zio-nio" % zioNioVersion,
+      "dev.zio" %% "zio-logging" % "0.5.11",
       "dev.zio" %% "zio-test" % zioVersion % Test,
       "dev.zio" %% "zio-test-sbt" % zioVersion % Test,
       "org.scalatest" %% "scalatest" % "3.2.9" % Test
-    )
+    ),
 
-    // testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
+    testFrameworks += new TestFramework("zio.test.sbt.ZTestFramework")
   )

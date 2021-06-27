@@ -2,6 +2,7 @@ package de.netherspace.apps.dscvry
 
 import zio._
 import zio.console._
+import zio.logging._
 
 import java.io.{ByteArrayOutputStream, IOException}
 import java.nio.ByteBuffer
@@ -11,7 +12,7 @@ import java.time.format.DateTimeFormatter
 import scala.collection.mutable
 
 type CddbSessionStateTransition = ZIO[
-  Has[Console.Service],
+  CddbServerEnv,
   Exception,
   CddbSessionState3
 ]
@@ -132,7 +133,8 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
 
 
   private def processCddbCommand(cddbProtocolCommand: CddbProtocolCommand, request: String,
-                                 oldSessionState: CddbSessionState3): ZIO[Console, Exception, Tuple2[Int, String]] = {
+                                 oldSessionState: CddbSessionState3):
+  ZIO[CddbServerEnv, Exception, Tuple2[Int, String]] = {
     val requestParts = request.split(" ")
     var newProtoLevel = oldSessionState.protocolLevel
 
@@ -167,7 +169,7 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
   }
 
 
-  def handleRequest3(requestChunk: Chunk[Byte], oldSessionState: CddbSessionState3): CddbSessionStateTransition = {
+  def handleRequest(requestChunk: Chunk[Byte], oldSessionState: CddbSessionState3): CddbSessionStateTransition = {
     for {
       // apply the charset from the given session to our request chunk:
       charsetName <- ZIO.succeed(protocolLevelsToCharsets(oldSessionState.protocolLevel).name)
@@ -176,11 +178,11 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
       requestString <- ZIO.succeed(
         charsettedRequestChunk.toList.map(c => String.valueOf(c)).mkString
       )
-      _ <- putStrLn(s"Request was: '$requestString'") // TODO: use a proper logger.debug()
+      // TODO: _ <- log.info(s"Request was: '$requestString'")
 
       // determine what should be done:
       cddbProtocolCommand: CddbProtocolCommand <- ZIO.succeed(determineProtocolCommand(requestString))
-      _ <- putStrLn(s"CddbProtocolCommand is: '$cddbProtocolCommand'") // TODO: use a proper logger.debug()
+      // TODO: _ <- log.info(s"CddbProtocolCommand is: '$cddbProtocolCommand'")
 
       // ...and do it:
       result <- processCddbCommand(cddbProtocolCommand, requestString, oldSessionState)
