@@ -15,11 +15,12 @@ import java.io.{ByteArrayOutputStream, IOException}
 import java.nio.charset.StandardCharsets
 import java.util
 
-type CddbServerEnv = Console & Clock // TODO: Has[Logger[String]] & Console & Clock
+type CddbServerEnv =
+  zio.Has[zio.logging.Logger[String]]
+    & zio.Has[zio.console.Console.Service]
+    & zio.Has[zio.clock.Clock.Service]
 
 type CddbdServerApp = ZManaged[
-  //Has[zio.logging.Logger[String]] & Has[Console.Service] & Has[Clock.Service],
-  //Logging & Console & Has[Clock.Service],
   CddbServerEnv,
   Exception,
   Unit
@@ -38,7 +39,7 @@ class CddbdServer {
   private def registerForBannerWriting(selector: Selector,
                                        clientChannel: SocketChannel): NioChannelOperation = {
     for {
-      // TODO: _ <- log.info(s"Writing banner to client channel $clientChannel")
+      _ <- log.debug(s"Writing banner to client channel $clientChannel")
       initialSessionState <- cddbdProtocol.createInitialSessionState()
       _ <- clientChannel.configureBlocking(false)
       _ <- clientChannel.register(
@@ -53,7 +54,7 @@ class CddbdServer {
                                     serverSocketChannel: ServerSocketChannel) = {
     for {
       // accept a new client connection:
-      // TODO: _ <- log.info("Accepting new client connection...")
+      _ <- log.debug("Accepting new client connection...")
       scopedAccept <- scope(serverSocketChannel.accept)
       (_, clientSocketChannelOption) = scopedAccept
 
@@ -76,10 +77,10 @@ class CddbdServer {
       _ <- buffer.flip
 
       remaining <- buffer.remaining
-      // TODO: _ <- log.info(s"buffer.remaining = $remaining")
+      _ <- log.trace(s"buffer.remaining = $remaining")
 
       requestChunk <- buffer.getChunk(remaining)
-      // TODO: _ <- log.info(s"buffer.getChunk(remaining) = $requestChunk")
+      _ <- log.trace(s"buffer.getChunk(remaining) = $requestChunk")
 
       // handle the request!
       newSessionState <- cddbdProtocol.handleRequest(requestChunk, sessionState)
@@ -105,7 +106,7 @@ class CddbdServer {
   private def readFromClientConn(scope: Managed.Scope, selector: Selector, key: SelectionKey,
                                  clientChannel: SocketChannel): NioChannelOperation = {
     for {
-      // TODO: _ <- log.info(s"Key $key is readable...")
+      _ <- log.trace(s"Key $key is readable...")
       att <- key.attachment
       sessionState <- extractSessionState(att)
       buffer <- BufferUtils.newBuffer(None).use { b =>
@@ -114,14 +115,14 @@ class CddbdServer {
           clientChannelIsOpen <- clientChannel.isOpen
           _ <- ZIO.when(clientChannelIsConnected && clientChannelIsOpen) {
             for {
-              // TODO: _ <- log.info(s"Reading from client channel $clientChannel...")
+              _ <- log.trace(s"Reading from client channel $clientChannel...")
 
               // read from the client and handle (some) exceptions gracefully:
               i <- clientChannel.read(b).catchSome {
                 case _: java.io.EOFException => ZIO.succeed(0)
                 case _: java.net.SocketException => ZIO.succeed(-1)
               }
-              // TODO: _ <- log.info(s"I read $i bytes from client channel $clientChannel!")
+              _ <- log.trace(s"I read $i bytes from client channel $clientChannel!")
 
               // the client closed the connection:
               _ <- ZIO.when(i < 0) {
@@ -161,17 +162,17 @@ class CddbdServer {
   private def writeToClientConn(scope: Managed.Scope, selector: Selector,
                                 key: SelectionKey, clientChannel: SocketChannel): NioChannelOperation = {
     for {
-      // TODO: _ <- log.info(s"Writing to client channel $clientChannel...")
+      _ <- log.debug(s"Writing to client channel $clientChannel...")
       att <- key.attachment
       sessionState <- extractSessionState(att)
       _ <- sessionState.buffer.get.flip
 
       remaining <- sessionState.buffer.get.remaining
-      // TODO: _ <- log.info(s"buffer.remaining = $remaining")
+      _ <- log.trace(s"buffer.remaining = $remaining")
 
       dupl <- sessionState.buffer.get.duplicate
       requestChunk <- dupl.getChunk(remaining)
-      // TODO: _ <- log.info(s"buffer.getChunk(remaining) = $requestChunk")
+      _ <- log.trace(s"buffer.getChunk(remaining) = $requestChunk")
 
       i <- clientChannel.write(
         sessionState.buffer.get
@@ -184,7 +185,7 @@ class CddbdServer {
           sessionState.copy(buffer = Some(sessionState.buffer.get))
         )
       )
-      // TODO: _ <- log.info(s"I wrote $i bytes to client channel $clientChannel!")
+      _ <- log.debug(s"I wrote $i bytes to client channel $clientChannel!")
     } yield ()
   }
 
@@ -227,7 +228,7 @@ class CddbdServer {
       serverSocketChannel <- ServerSocketChannel.open
       _ <- Managed.fromEffect {
         for {
-          // TODO: _ <- log.info(s"Binding on port $port...")
+          _ <- log.info(s"Binding on port $port...")
           serverSocket <- InetSocketAddress.hostNameResolved("127.0.0.1", port)
           _ <- serverSocketChannel.bindTo(serverSocket)
           _ <- serverSocketChannel.configureBlocking(false)

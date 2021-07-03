@@ -1,21 +1,20 @@
 package de.netherspace.apps.dscvry
 
 import zio._
-import zio.logging._
-import zio.console._
 import zio.clock._
+import zio.console._
+import zio.logging._
 
 object CddbdBootstrap {
 
   val ServerPort = 8880
-  val nioSelectionSchedule =  Schedule.forever
+  val nioSelectionSchedule = Schedule.forever
 
-  // TODO: what type is appLogic?
-  // : ZIO[Logging & Console & Clock, Exception, Unit] ?
-  // : ZIO[Logging, Nothing, Unit] ? works barebone (playground project)!
-  val appLogic =
+  val appLogic: ZIO[CddbServerEnv, Exception, Unit] =
     for {
-      // TODO: _ <- log.info("Server started")
-      _ <- new CddbdServer().bootstrap(ServerPort, nioSelectionSchedule).useForever
+      _ <- log.info("Starting server...")
+      _ <- new CddbdServer()
+        .bootstrap(ServerPort, nioSelectionSchedule)
+        .useForever
     } yield ()
 }

@@ -1,13 +1,15 @@
 package de.netherspace.apps.dscvry
 
-import zio.{Schedule, _}
+import zio.{Schedule, ZIO, ZLayer}
+import zio.clock._
+import zio.console._
 import zio.duration._
+import zio.logging._
 import zio.nio.core._
 import zio.nio.core.channels._
 import zio.test.Assertion._
 import zio.test.TestAspect._
 import zio.test._
-import zio.test.environment._
 
 import java.nio.charset.StandardCharsets
 
@@ -15,11 +17,18 @@ object CddbdServerTest extends DefaultRunnableSpec {
 
   val testPort = 8881
 
+  val testLogger: ZLayer[Console & Clock, Nothing, Logging] =
+    Logging.ignore
+
   def spec = suite("CddbServerSuite")(
     testM("server sends banner") {
       for {
         // spin up a server instance:
-        server <- new CddbdServer().bootstrap(testPort, Schedule.once).useNow.fork
+        server <- new CddbdServer()
+          .bootstrap(testPort, Schedule.once)
+          .useNow
+          .provideCustomLayer(testLogger)
+          .fork
 
         // open client conn and read our banner:
         addr <- InetSocketAddress.hostNameResolved("127.0.0.1", testPort)
@@ -48,6 +57,6 @@ object CddbdServerTest extends DefaultRunnableSpec {
         && assert(bufferPos)(isGreaterThanEqualTo(65))
         && assert(banner)(not(isNull))
         && assert(banner)(startsWithString("201 Dscvry CDDBP server v0.0.1 ready at"))
-    } @@ timeout(2.seconds)
+    } @@ timeout(12.seconds)
   )
 }

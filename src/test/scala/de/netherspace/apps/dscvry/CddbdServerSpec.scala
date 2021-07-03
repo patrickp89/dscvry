@@ -3,6 +3,10 @@ package de.netherspace.apps.dscvry
 import org.scalatest._
 import org.scalatest.flatspec._
 import org.scalatest.matchers._
+import zio._
+import zio.clock._
+import zio.console._
+import zio.logging._
 
 import java.io.{InputStreamReader, PrintWriter}
 import java.net.Socket
@@ -15,12 +19,23 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
 
   private var executor: Option[ExecutorService] = None
 
+  val testLogger: ZLayer[Console & Clock, Nothing, Logging] =
+    Logging.console(
+      logLevel = LogLevel.Info,
+      format = LogFormat.ColoredLogFormat()
+    ) >>> Logging.withRootLoggerName("CddbdServerSpec")
+
   override def beforeAll(): Unit = {
     executor = Some(Executors.newCachedThreadPool())
     executor.get.submit(new Runnable {
       override def run(): Unit = {
         println("Booting dscvry for tests...")
-        zio.Runtime.default.unsafeRun(CddbdBootstrap.appLogic.exitCode)
+        zio.Runtime.default.unsafeRun(
+          CddbdBootstrap
+            .appLogic
+            .provideCustomLayer(testLogger)
+            .exitCode
+        )
       }
     })
     Thread.sleep(5200) // this is ugly af, but it's an integration test to begin with...
