@@ -14,25 +14,29 @@ import scala.collection.mutable
 type CddbSessionStateTransition = ZIO[
   CddbServerEnv,
   Exception,
-  CddbSessionState3
+  CddbSessionState
 ]
 
 class CddbdProtocol(val cddbDatabase: CddbDatabase) {
 
   sealed trait CddbProtocolCommand
-
   case class LoginHandshake() extends CddbProtocolCommand
-
   case class ServerProtocolLevelChange() extends CddbProtocolCommand
-
   case class DiscidCalculation() extends CddbProtocolCommand
-
   case class QueryDatabaseWithDiscId() extends CddbProtocolCommand
-
   case class EmptyCommand() extends CddbProtocolCommand
-
   case class UnknownCddbCommand() extends CddbProtocolCommand
 
+  sealed trait CddbResponse
+  case class FoundExactMatch() extends CddbResponse
+  case class FoundInexactMatches() extends CddbResponse
+  case class NoMatchFound() extends CddbResponse
+
+  private val cddbResponsesToResponseCodes = Map(
+    FoundExactMatch -> 200,
+    FoundInexactMatches -> 211,
+    NoMatchFound -> 202
+  )
 
   private val appName = "Dscvry"
 
@@ -68,11 +72,11 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
         for {
           _ <- b.putChunk(contentChunk)
         } yield (
-          CddbSessionState3(
+          CddbSessionState(
             protocolLevel = newProtoLevel,
             buffer = Some(b)
           )
-          )
+        )
       }
     } yield sessionState
   }
@@ -82,9 +86,9 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     val username = requestParts(2)
     val clientName = requestParts(4)
     val clientVersion = requestParts(5)
-
     s"200 Hello and welcome $username running $clientName $clientVersion"
   }
+
 
   private def setCddbProtocolLevel(requestParts: Array[String]): (Int, String) = {
     val illegalProtoLevel = "501 Illegal protocol level"
@@ -101,20 +105,42 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     }
   }
 
+
   private def calculateDiscId(requestParts: Array[String]): String = {
     // TODO: Discid calculation
     "stub"
   }
 
+  private def toString(disc: CddbDisc) =
+        s"${disc.category} ${disc.discId} ${disc.dtitle}"
+
+
   private def queryDatabase(requestParts: Array[String]): String = {
     val n = requestParts.length
     val discId = requestParts(2)
-    val numberOfTracks = requestParts(3)
+    val numberOfTracks = requestParts(3).toInt
+    val trackOffsets: List[Int] = List() // TODO: get from request!
     val totalPlayingLength = requestParts(n - 1)
     println(s"Querying database for discId $discId...")
 
-    // TODO: cddbDatabase.query(discId, numberOfTracks, trackOffsets, totalPlayingLength)
-    "stub"
+    val discs = cddbDatabase.query(discId, numberOfTracks, trackOffsets, totalPlayingLength)
+    
+    // return a big string where matching discs are separated by a linebreak:
+    return if (discs.isEmpty) {
+      val responseCode = cddbResponsesToResponseCodes(NoMatchFound)
+      s"$responseCode"
+
+    } else if (discs.size == 1) {
+      val responseCode = cddbResponsesToResponseCodes(FoundExactMatch)
+      s"$responseCode ${discs(0)}"
+
+    } else {
+      val responseCode = cddbResponsesToResponseCodes(FoundInexactMatches)
+      val foldedDiscs = discs
+        .map(d => toString(d))
+        .mkString("\n")
+      s"$responseCode close matches found\n$foldedDiscs\n."
+    }
   }
 
 
@@ -133,7 +159,7 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
 
 
   private def processCddbCommand(cddbProtocolCommand: CddbProtocolCommand, request: String,
-                                 oldSessionState: CddbSessionState3):
+                                 oldSessionState: CddbSessionState):
   ZIO[CddbServerEnv, Exception, Tuple2[Int, String]] = {
     val requestParts = request.split(" ")
     var newProtoLevel = oldSessionState.protocolLevel
@@ -169,7 +195,7 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
   }
 
 
-  def handleRequest(requestChunk: Chunk[Byte], oldSessionState: CddbSessionState3): CddbSessionStateTransition = {
+  def handleRequest(requestChunk: Chunk[Byte], oldSessionState: CddbSessionState): CddbSessionStateTransition = {
     for {
       // apply the charset from the given session to our request chunk:
       charsetName <- ZIO.succeed(protocolLevelsToCharsets(oldSessionState.protocolLevel).name)
@@ -178,11 +204,11 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
       requestString <- ZIO.succeed(
         charsettedRequestChunk.toList.map(c => String.valueOf(c)).mkString
       )
-      // TODO: _ <- log.info(s"Request was: '$requestString'")
+      _ <- log.debug(s"Request was: '$requestString'")
 
       // determine what should be done:
       cddbProtocolCommand: CddbProtocolCommand <- ZIO.succeed(determineProtocolCommand(requestString))
-      // TODO: _ <- log.info(s"CddbProtocolCommand is: '$cddbProtocolCommand'")
+      _ <- log.info(s"CddbProtocolCommand is: '$cddbProtocolCommand'")
 
       // ...and do it:
       result <- processCddbCommand(cddbProtocolCommand, requestString, oldSessionState)

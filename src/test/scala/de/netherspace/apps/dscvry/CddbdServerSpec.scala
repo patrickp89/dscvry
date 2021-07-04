@@ -19,11 +19,13 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
 
   private var executor: Option[ExecutorService] = None
 
+
   val testLogger: ZLayer[Console & Clock, Nothing, Logging] =
     Logging.console(
       logLevel = LogLevel.Info,
       format = LogFormat.ColoredLogFormat()
     ) >>> Logging.withRootLoggerName("CddbdServerSpec")
+
 
   override def beforeAll(): Unit = {
     executor = Some(Executors.newCachedThreadPool())
@@ -41,14 +43,15 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     Thread.sleep(5200) // this is ugly af, but it's an integration test to begin with...
   }
 
+
   private def openNewClientConn(): Socket = {
     val clientSocket = new Socket("127.0.0.1", testPort)
     clientSocket.setSoTimeout(2100)
     clientSocket
   }
 
+
   private def readBanner(isr: InputStreamReader): String = {
-    println("Reading banner...")
     val sb = new StringBuilder
     for (_ <- Seq.range(0, expBannerLength)) {
       val c = isr.read()
@@ -61,10 +64,12 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     banner
   }
 
+
   "A CDDBd server" should "boot properly" in {
     executor.isEmpty should be(false)
     executor.get.isShutdown should be(false)
   }
+
 
   it should "send a banner when a client connects" in {
     val clientSocket = openNewClientConn()
@@ -77,6 +82,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     banner.length should be(expBannerLength)
     banner should startWith("201 Dscvry CDDBP server v0.0.1 ready at ")
   }
+
 
   it should "respond with hello and welcome to finish the handshake" in {
     val clientSocket = openNewClientConn()
@@ -109,6 +115,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     handshakeResponse should be("200 Hello and welcome anonymous running testclient 0.0.1\n")
   }
 
+
   it should "allow clients to set a CDDB protocol level" in {
     val clientSocket = openNewClientConn()
     val out = clientSocket.getOutputStream
@@ -139,7 +146,8 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     handshakeResponse should be("201 OK, CDDB protocol level now: 6\n")
   }
 
-  /*it should "return an inexact-matches response if multiple matching discs were found" in {
+
+  it should "return an inexact-matches response if multiple matching discs were found" in {
     val clientSocket = openNewClientConn()
     val out = clientSocket.getOutputStream
     val isr = new InputStreamReader(clientSocket.getInputStream)
@@ -156,7 +164,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     printWriter.flush()
     out.flush()
 
-    val expResponseLength = 4 // TODO
+    val expResponseLength = 124
     val sb = new StringBuilder
     for (_ <- Seq.range(0, expResponseLength)) {
       val c = isr.read()
@@ -171,8 +179,10 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     val handshakeResponse = sb.toString()
 
     handshakeResponse.length should be(expResponseLength)
-    handshakeResponse should be("stub") // TODO: inexactmatches response!
-  }*/
+    handshakeResponse should be("211 close matches found\nrock f50a3b13 Pink"
+      +" Floyd / The Dark Side of the Moon\nmetal h6k31bg1 Iron Maiden / Brave New World\n.\n")
+  }
+
 
   it should "allow multiple client connections" in {
     // open a first connection and read the banner:
@@ -206,6 +216,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     banner3.length should be(expBannerLength)
   }
 
+
   it should "keep running when a client prematurely closes its connection" in {
     // open a connection:
     val clientSocket = openNewClientConn()
@@ -232,6 +243,7 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     clientSocket2.close()
   }
 
+
   it should "keep running when a client resets its connection" in {
     // open a connection:
     val clientSocket = openNewClientConn()
@@ -244,7 +256,8 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
         val c = isr.read()
       }
     } catch {
-      case _: java.net.SocketTimeoutException => () // this is meant to happen!
+      // a SocketTimeoutException will be thrown, catch it:
+      case _: java.net.SocketTimeoutException => ()
     }
 
     // close the connection:
@@ -262,8 +275,8 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     clientSocket2.close()
   }
 
+
   override def afterAll(): Unit = {
-    println("Shutting down dscvry!")
     executor.isEmpty should be(false)
     executor.get.isShutdown should be(false)
 

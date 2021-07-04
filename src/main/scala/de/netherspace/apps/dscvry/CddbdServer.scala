@@ -54,7 +54,7 @@ class CddbdServer {
                                     serverSocketChannel: ServerSocketChannel) = {
     for {
       // accept a new client connection:
-      _ <- log.debug("Accepting new client connection...")
+      _ <- log.info("Accepting new client connection...")
       scopedAccept <- scope(serverSocketChannel.accept)
       (_, clientSocketChannelOption) = scopedAccept
 
@@ -72,7 +72,7 @@ class CddbdServer {
 
 
   private def readRequest(selector: Selector, clientChannel: SocketChannel,
-                          sessionState: CddbSessionState3, buffer: ByteBuffer) = {
+                          sessionState: CddbSessionState, buffer: ByteBuffer) = {
     for {
       _ <- buffer.flip
 
@@ -95,9 +95,9 @@ class CddbdServer {
   }
 
 
-  private def extractSessionState(att: Option[AnyRef]): ZIO[Any, Exception, CddbSessionState3] = {
-    val optionalSessionState: Option[CddbSessionState3] = att.map {
-      (attachment: AnyRef) => attachment.asInstanceOf[CddbSessionState3]
+  private def extractSessionState(att: Option[AnyRef]): ZIO[Any, Exception, CddbSessionState] = {
+    val optionalSessionState: Option[CddbSessionState] = att.map {
+      (attachment: AnyRef) => attachment.asInstanceOf[CddbSessionState]
     }
     ZIO.fromOption(optionalSessionState).mapError(_ => Exception("No attachment found!"))
   }

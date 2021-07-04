@@ -11,7 +11,7 @@ object Main extends zio.App {
     Logging.console(
       logLevel = LogLevel.Info,
       format = LogFormat.ColoredLogFormat()
-    ) >>> Logging.withRootLoggerName("my-component")
+    ) >>> Logging.withRootLoggerName("dscvry")
 
   // run the app:
   override def run(args: List[String]): URIO[ZEnv, ExitCode] =

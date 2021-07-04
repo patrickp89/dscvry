@@ -1,7 +1,7 @@
 # dscvry
 [![Build Status](https://github.com/patrickp89/dscvry/actions/workflows/build.yml/badge.svg)](https://github.com/patrickp89/dscvry/actions/workflows/build.yml)
 
-A scalable CDDBd implementation.
+A mdoern CDDBd implementation.
 
 ## How to build it?
 Install [SBT](https://www.scala-sbt.org/1.x/docs/Installing-sbt-on-Linux.html)
