@@ -122,9 +122,9 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
     val isr = new InputStreamReader(clientSocket.getInputStream)
     readBanner(isr)
 
-    val clientHelloMessage = "proto 6"
+    val cmd = "proto 6"
     val printWriter = new PrintWriter(out)
-    printWriter.write(clientHelloMessage)
+    printWriter.write(cmd)
     printWriter.flush()
     out.flush()
 
@@ -180,7 +180,43 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
 
     handshakeResponse.length should be(expResponseLength)
     handshakeResponse should be("211 close matches found\nrock f50a3b13 Pink"
-      +" Floyd / The Dark Side of the Moon\nmetal h6k31bg1 Iron Maiden / Brave New World\n.\n")
+      + " Floyd / The Dark Side of the Moon\nmetal h6k31bg1 Iron Maiden / Brave New World\n.\n")
+  }
+
+
+  it should "calculate a proper disc ID for a given TOC" in {
+    val clientSocket = openNewClientConn()
+    val out = clientSocket.getOutputStream
+    val isr = new InputStreamReader(clientSocket.getInputStream)
+    readBanner(isr)
+
+    val numberOfTracks = "9"
+    val trackOffsets = "150 18137 34414 66426 88108 116945 152367 167944 185383"
+    val totalPlayingLength = "2593"
+    val cmd = s"discid $numberOfTracks $trackOffsets $totalPlayingLength"
+
+    println(s"CDDB command is: '$cmd'")
+    val printWriter = new PrintWriter(out)
+    printWriter.write(cmd)
+    printWriter.flush()
+    out.flush()
+
+    val expResponseLength = 13
+    val sb = new StringBuilder
+    for (_ <- Seq.range(0, expResponseLength)) {
+      val c = isr.read()
+      sb.append(c.asInstanceOf[Char])
+    }
+
+    isr.close()
+    out.close()
+    clientSocket.close()
+
+    sb.length() should be > 0
+    val handshakeResponse = sb.toString()
+
+    handshakeResponse.length should be(expResponseLength)
+    handshakeResponse should be("200 740a1f09\n")
   }
 
 

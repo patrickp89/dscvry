@@ -11,6 +11,7 @@ import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
 import scala.collection.mutable
 
+
 type CddbSessionStateTransition = ZIO[
   CddbServerEnv,
   Exception,
@@ -31,11 +32,13 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
   case class FoundExactMatch() extends CddbResponse
   case class FoundInexactMatches() extends CddbResponse
   case class NoMatchFound() extends CddbResponse
+  case class CommandSyntaxError() extends CddbResponse
 
   private val cddbResponsesToResponseCodes = Map(
     FoundExactMatch -> 200,
     FoundInexactMatches -> 211,
-    NoMatchFound -> 202
+    NoMatchFound -> 202,
+    CommandSyntaxError -> 500
   )
 
   private val appName = "Dscvry"
@@ -106,11 +109,52 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
   }
 
 
-  private def calculateDiscId(requestParts: Array[String]): String = {
-    // TODO: Discid calculation
-    "stub"
+  /**
+   * Processes a 'discid' command like the following one
+   *   'discid 11 150 28690 51102 75910 102682 121522 149040 175772 204387 231145 268065 3822'
+   * by calculating the disc ID for the given arguments. 
+   */
+  private def calculateDiscId(requestParts: Array[String]): ZIO[CddbServerEnv, Exception, String] = {
+    val n = requestParts.length
+    val numberOfTracks = requestParts(1).toInt
+    val trackOffsets: List[Int] = requestParts
+      .slice(2, n-1)
+      .toList
+      .map { s => s.toInt }
+    val totalPlayingLength = requestParts(n-1).toInt // in seconds
+
+    // did we get the correct number of offsets?
+    if (numberOfTracks != (trackOffsets.size)) {
+      return for {
+          _ <- log.warn("Provided number of tracks did not match the track offsets provided!")
+      } yield s"${cddbResponsesToResponseCodes(CommandSyntaxError)} Command Syntax error"
+    }
+
+    // calculate the disc ID:
+    val discId = CddbUtils.calculateDiscId(trackOffsets, totalPlayingLength)
+
+    return for {
+      id <- ZIO
+        .fromEither(discId)
+        .catchSome {
+          case iae: IllegalArgumentException => {
+            val responseCode = cddbResponsesToResponseCodes(CommandSyntaxError)
+            return for {
+              _ <- log.error("Could not calculate disc ID!")
+            } yield s"$responseCode Command Syntax error"
+          }
+
+          case e => {
+            val responseCode = cddbResponsesToResponseCodes(CommandSyntaxError)
+            return for {
+              _ <- log.error("Something went wrong when calculating a disc ID!")
+            } yield s"$responseCode Command Syntax error" // TODO: use a generic error message instead!
+          }
+        }
+    } yield s"200 $id"
   }
 
+  
   private def toString(disc: CddbDisc) =
         s"${disc.category} ${disc.discId} ${disc.dtitle}"
 
@@ -120,8 +164,8 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     val discId = requestParts(2)
     val numberOfTracks = requestParts(3).toInt
     val trackOffsets: List[Int] = List() // TODO: get from request!
-    val totalPlayingLength = requestParts(n - 1)
-    println(s"Querying database for discId $discId...")
+    val totalPlayingLength = requestParts(n - 1).toInt // in seconds
+    // TODO: log.info(s"Querying database for discId $discId...")
 
     val discs = cddbDatabase.query(discId, numberOfTracks, trackOffsets, totalPlayingLength)
     
@@ -160,26 +204,41 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
 
   private def processCddbCommand(cddbProtocolCommand: CddbProtocolCommand, request: String,
                                  oldSessionState: CddbSessionState):
-  ZIO[CddbServerEnv, Exception, Tuple2[Int, String]] = {
+                                 ZIO[CddbServerEnv, Exception, Tuple2[Int, String]] = {
     val requestParts = request.split(" ")
-    var newProtoLevel = oldSessionState.protocolLevel
 
-    val response: String = cddbProtocolCommand match {
-      case LoginHandshake() => handleHandshake(requestParts)
-      case ServerProtocolLevelChange() => {
-        val (pl, resp) = setCddbProtocolLevel(requestParts)
-        newProtoLevel = pl
-        resp
-      }
-      case DiscidCalculation() => calculateDiscId(requestParts)
-      case QueryDatabaseWithDiscId() => queryDatabase(requestParts)
-      case EmptyCommand() => "error" // TODO: proper error response?
-      case _ =>
-        // TODO: println("An unknown command was sent!")
-        "error" // TODO: proper error response?
-    }
     for {
-      result <- ZIO.succeed((newProtoLevel, response))
+      result <- cddbProtocolCommand match {
+        case LoginHandshake() => ZIO.succeed(
+          (oldSessionState.protocolLevel, handleHandshake(requestParts))
+        )
+
+        case ServerProtocolLevelChange() => ZIO.succeed(
+          setCddbProtocolLevel(requestParts)
+        )
+
+        case QueryDatabaseWithDiscId() => ZIO.succeed(
+           (oldSessionState.protocolLevel, queryDatabase(requestParts))
+        )
+
+        case DiscidCalculation() => {
+          for {
+            discIdResponse <- calculateDiscId(requestParts)
+            pl <- ZIO.succeed(oldSessionState.protocolLevel)
+            t: Tuple2[Int, String] <- ZIO.succeed(
+              (pl, discIdResponse)
+            )
+          } yield t
+        }
+
+        case EmptyCommand() => ZIO.succeed(
+          (oldSessionState.protocolLevel, "error") // TODO: proper error response!
+        )
+
+        case _ => ZIO.succeed(
+          (oldSessionState.protocolLevel, "error") // TODO: proper error response!
+        )
+      }
     } yield result
   }
 

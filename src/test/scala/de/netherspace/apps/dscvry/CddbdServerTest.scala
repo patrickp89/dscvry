@@ -1,6 +1,5 @@
 package de.netherspace.apps.dscvry
 
-import zio.{Schedule, ZIO, ZLayer}
 import zio.clock._
 import zio.console._
 import zio.duration._
@@ -10,6 +9,7 @@ import zio.nio.core.channels._
 import zio.test.Assertion._
 import zio.test.TestAspect._
 import zio.test._
+import zio.{Schedule, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
 

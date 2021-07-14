@@ -3,7 +3,7 @@ package de.netherspace.apps.dscvry
 class CddbDatabase {
 
     def query(discId: String, numberOfTracks: Int,  trackOffsets: List[Int],
-        totalPlayingLength: String): List[CddbDisc] = {
+        totalPlayingLength: Int): List[CddbDisc] = {
         // look up the disc(s):
         // TODO!
 
