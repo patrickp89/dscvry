@@ -147,20 +147,58 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
   }
 
 
+  it should "return an exact match response if a single matching disc was found" in {
+    val clientSocket = openNewClientConn()
+    val out = clientSocket.getOutputStream
+    val isr = new InputStreamReader(clientSocket.getInputStream)
+    readBanner(isr)
+
+    val testDiscId = "6a097308"
+    val numberOfTracks = "8"
+    val trackOffsets = "150 15375 35992 63142 92865 114667 132115 149265"
+    val totalPlayingLength = "2421"
+    val cmd = s"cddb query $testDiscId $numberOfTracks $trackOffsets $totalPlayingLength"
+
+    println(s"CDDB command is: '$cmd'")
+    val printWriter = new PrintWriter(out)
+    printWriter.write(cmd)
+    printWriter.flush()
+    out.flush()
+
+    val expResponseLength = 56
+    val sb = new StringBuilder
+    for (_ <- Seq.range(0, expResponseLength)) {
+      val c = isr.read()
+      sb.append(c.asInstanceOf[Char])
+    }
+
+    isr.close()
+    out.close()
+    clientSocket.close()
+
+    sb.length() should be > 0
+    val handshakeResponse = sb.toString()
+
+    handshakeResponse.length should be(expResponseLength)
+    handshakeResponse should be("200 rock 6a097308 Iron Maiden / The Number Of The Beast\n")
+  }
+
+
   it should "return an inexact-matches response if multiple matching discs were found" in {
     val clientSocket = openNewClientConn()
     val out = clientSocket.getOutputStream
     val isr = new InputStreamReader(clientSocket.getInputStream)
     readBanner(isr)
 
-    val testDiscId = "920eec0b"
+    val testDiscId = "830fb50a"
     val numberOfTracks = "11"
     val trackOffsets = "150 28690 51102 75910 102682 121522 149040 175772 204387 231145 268065"
     val totalPlayingLength = "3822"
-    val clientQueryDiscIdMessage = s"cddb query $testDiscId $numberOfTracks $trackOffsets $totalPlayingLength"
+    val cmd = s"cddb query $testDiscId $numberOfTracks $trackOffsets $totalPlayingLength"
 
+    println(s"CDDB command is: '$cmd'")
     val printWriter = new PrintWriter(out)
-    printWriter.write(clientQueryDiscIdMessage)
+    printWriter.write(cmd)
     printWriter.flush()
     out.flush()
 

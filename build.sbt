@@ -11,6 +11,7 @@ lazy val root = project
     scalaVersion := "3.0.0",
 
     libraryDependencies ++= Seq(
+      "org.mongodb" % "mongo-java-driver" % "3.12.9",
       "dev.zio" %% "zio-nio" % zioNioVersion,
       "dev.zio" %% "zio-logging" % "0.5.11",
       "dev.zio" %% "zio-test" % zioVersion % Test,

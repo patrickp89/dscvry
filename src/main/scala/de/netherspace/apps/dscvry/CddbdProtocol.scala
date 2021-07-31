@@ -79,7 +79,7 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
             protocolLevel = newProtoLevel,
             buffer = Some(b)
           )
-        )
+          )
       }
     } yield sessionState
   }
@@ -111,22 +111,31 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
 
   /**
    * Processes a 'discid' command like the following one
-   *   'discid 11 150 28690 51102 75910 102682 121522 149040 175772 204387 231145 268065 3822'
-   * by calculating the disc ID for the given arguments. 
+   * 'discid 11 150 28690 51102 75910 102682 121522 149040 175772 204387 231145 268065 3822'
+   * by calculating the disc ID for the given disc TOC.
+   *
+   * Its arguments are
+   * 'discid ntrks off_1 off_2 ... off_n nsecs'
+   * where
+   * ntrks is the total number of tracks on the disc,
+   * off_1, off_2, to off_n are the tracks' offsets, and
+   * nsecs is the disc's total playing length in seconds.
+   *
+   * Note that, oddly, this command does not start with a leading "cddb ".
    */
   private def calculateDiscId(requestParts: Array[String]): ZIO[CddbServerEnv, Exception, String] = {
     val n = requestParts.length
     val numberOfTracks = requestParts(1).toInt
     val trackOffsets: List[Int] = requestParts
-      .slice(2, n-1)
+      .slice(2, n - 1)
       .toList
       .map { s => s.toInt }
-    val totalPlayingLength = requestParts(n-1).toInt // in seconds
+    val totalPlayingLength = requestParts(n - 1).toInt
 
     // did we get the correct number of offsets?
     if (numberOfTracks != (trackOffsets.size)) {
       return for {
-          _ <- log.warn("Provided number of tracks did not match the track offsets provided!")
+        _ <- log.warn("Provided number of tracks did not match the track offsets provided!")
       } yield s"${cddbResponsesToResponseCodes(CommandSyntaxError)} Command Syntax error"
     }
 
@@ -154,37 +163,79 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     } yield s"200 $id"
   }
 
-  
+
   private def toString(disc: CddbDisc) =
-        s"${disc.category} ${disc.discId} ${disc.dtitle}"
+    s"${disc.category} ${disc.discId} ${disc.dtitle}"
 
 
-  private def queryDatabase(requestParts: Array[String]): String = {
-    val n = requestParts.length
-    val discId = requestParts(2)
-    val numberOfTracks = requestParts(3).toInt
-    val trackOffsets: List[Int] = List() // TODO: get from request!
-    val totalPlayingLength = requestParts(n - 1).toInt // in seconds
-    // TODO: log.info(s"Querying database for discId $discId...")
-
-    val discs = cddbDatabase.query(discId, numberOfTracks, trackOffsets, totalPlayingLength)
-    
-    // return a big string where matching discs are separated by a linebreak:
+  private def toResponse(discs: List[CddbDisc]): (String, String) = {
     return if (discs.isEmpty) {
+      // no disc found => return "202":
       val responseCode = cddbResponsesToResponseCodes(NoMatchFound)
-      s"$responseCode"
+      val response = s"$responseCode"
+      val m = "No matching discs found"
+      (response, m)
 
     } else if (discs.size == 1) {
+      // only one disc => simply return it:
       val responseCode = cddbResponsesToResponseCodes(FoundExactMatch)
-      s"$responseCode ${discs(0)}"
+      val d = toString(discs(0))
+      val response = s"$responseCode $d"
+      val m = s"Found exactly one matching disc:\n$d"
+      (response, m)
 
     } else {
+      // return a big string where matching discs are separated by a linebreak:
       val responseCode = cddbResponsesToResponseCodes(FoundInexactMatches)
       val foldedDiscs = discs
         .map(d => toString(d))
         .mkString("\n")
-      s"$responseCode close matches found\n$foldedDiscs\n."
+      val response = s"$responseCode close matches found\n$foldedDiscs\n."
+      val m = s"Found ${discs.size} matching discs:\n$foldedDiscs"
+      (response, m)
     }
+  }
+
+
+  /**
+   * Processes a 'cddb query' command like the following one
+   * 'cddb query 920eec0b 11 150 28690 51102 75910 102682 121522 149040 175772 204387 231145 268065 3822'
+   * by querying Dscvry's database for the given TOC.
+   *
+   * Its arguments are
+   * 'cddb query discid ntrks off_1 off_2 ... off_n nsecs'
+   * where
+   * discid is the disc's ID (see e.g. calculateDiscId() above)
+   * ntrks is the total number of tracks on the disc,
+   * off_1, off_2, to off_n are the tracks' offsets, and
+   * nsecs is the disc's total playing length in seconds.
+   */
+  private def queryDatabase(requestParts: Array[String]): ZIO[CddbServerEnv, Exception, String] = {
+    val n = requestParts.length
+    val discId = requestParts(2)
+    val numberOfTracks = requestParts(3).toInt
+    val trackOffsets: List[Int] = requestParts
+      .slice(4, n - 1)
+      .toList
+      .map { s => s.toInt }
+    val totalPlayingLength = requestParts(n - 1).toInt
+
+    // did we get the correct number of offsets?
+    if (numberOfTracks != (trackOffsets.size)) {
+      return for {
+        _ <- log.warn("Provided number of tracks did not match the track offsets provided!")
+      } yield s"${cddbResponsesToResponseCodes(CommandSyntaxError)} Command Syntax error"
+    }
+
+    // okay, let's query the database:
+    return for {
+      _ <- log.debug(s"Querying database for discId $discId...")
+      (response, m) <- ZIO
+        .succeed(cddbDatabase.query(discId, trackOffsets, totalPlayingLength))
+        .map(matchingDiscs => toResponse(matchingDiscs))
+
+      _ <- log.debug(m)
+    } yield response
   }
 
 
@@ -204,7 +255,7 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
 
   private def processCddbCommand(cddbProtocolCommand: CddbProtocolCommand, request: String,
                                  oldSessionState: CddbSessionState):
-                                 ZIO[CddbServerEnv, Exception, Tuple2[Int, String]] = {
+  ZIO[CddbServerEnv, Exception, Tuple2[Int, String]] = {
     val requestParts = request.split(" ")
 
     for {
@@ -217,9 +268,15 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
           setCddbProtocolLevel(requestParts)
         )
 
-        case QueryDatabaseWithDiscId() => ZIO.succeed(
-           (oldSessionState.protocolLevel, queryDatabase(requestParts))
-        )
+        case QueryDatabaseWithDiscId() => {
+          for {
+            matchingDiscs <- queryDatabase(requestParts)
+            pl <- ZIO.succeed(oldSessionState.protocolLevel)
+            t: Tuple2[Int, String] <- ZIO.succeed(
+              (pl, matchingDiscs)
+            )
+          } yield t
+        }
 
         case DiscidCalculation() => {
           for {
