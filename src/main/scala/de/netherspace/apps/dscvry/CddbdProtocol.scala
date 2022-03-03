@@ -1,7 +1,6 @@
 package de.netherspace.apps.dscvry
 
 import zio._
-import zio.console._
 import zio.logging._
 
 import java.io.{ByteArrayOutputStream, IOException}
@@ -71,7 +70,8 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     )
     val contentChunk = zio.Chunk.fromArray(contentBytes)
     for {
-      sessionState <- BufferUtils.newBuffer(None).use { b =>
+      b <- BufferUtils.newBuffer(None)
+      sessionState <-
         for {
           _ <- b.putChunk(contentChunk)
         } yield (
@@ -79,8 +79,7 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
             protocolLevel = newProtoLevel,
             buffer = Some(b)
           )
-          )
-      }
+        )
     } yield sessionState
   }
 
@@ -135,7 +134,7 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     // did we get the correct number of offsets?
     if (numberOfTracks != (trackOffsets.size)) {
       return for {
-        _ <- log.warn("Provided number of tracks did not match the track offsets provided!")
+        _ <- ZIO.logWarning("Provided number of tracks did not match the track offsets provided!")
       } yield s"${cddbResponsesToResponseCodes(CommandSyntaxError)} Command Syntax error"
     }
 
@@ -149,14 +148,14 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
           case iae: IllegalArgumentException => {
             val responseCode = cddbResponsesToResponseCodes(CommandSyntaxError)
             return for {
-              _ <- log.error("Could not calculate disc ID!")
+              _ <- ZIO.logError("Could not calculate disc ID!")
             } yield s"$responseCode Command Syntax error"
           }
 
           case e => {
             val responseCode = cddbResponsesToResponseCodes(CommandSyntaxError)
             return for {
-              _ <- log.error("Something went wrong when calculating a disc ID!")
+              _ <- ZIO.logError("Something went wrong when calculating a disc ID!")
             } yield s"$responseCode Command Syntax error" // TODO: use a generic error message instead!
           }
         }
@@ -223,18 +222,18 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     // did we get the correct number of offsets?
     if (numberOfTracks != (trackOffsets.size)) {
       return for {
-        _ <- log.warn("Provided number of tracks did not match the track offsets provided!")
+        _ <- ZIO.logWarning("Provided number of tracks did not match the track offsets provided!")
       } yield s"${cddbResponsesToResponseCodes(CommandSyntaxError)} Command Syntax error"
     }
 
     // okay, let's query the database:
     return for {
-      _ <- log.debug(s"Querying database for discId $discId...")
+      _ <- ZIO.logDebug(s"Querying database for discId $discId...")
       (response, m) <- ZIO
         .succeed(cddbDatabase.query(discId, trackOffsets, totalPlayingLength))
         .map(matchingDiscs => toResponse(matchingDiscs))
 
-      _ <- log.debug(m)
+      _ <- ZIO.logDebug(m)
     } yield response
   }
 
@@ -315,16 +314,16 @@ class CddbdProtocol(val cddbDatabase: CddbDatabase) {
     for {
       // apply the charset from the given session to our request chunk:
       charsetName <- ZIO.succeed(protocolLevelsToCharsets(oldSessionState.protocolLevel).name)
-      charset <- ZIO.succeed(zio.nio.core.charset.Charset.availableCharsets(charsetName))
+      charset <- ZIO.succeed(zio.nio.charset.Charset.availableCharsets(charsetName))
       charsettedRequestChunk <- charset.decodeChunk(requestChunk)
       requestString <- ZIO.succeed(
         charsettedRequestChunk.toList.map(c => String.valueOf(c)).mkString
       )
-      _ <- log.debug(s"Request was: '$requestString'")
+      _ <- ZIO.logDebug(s"Request was: '$requestString'")
 
       // determine what should be done:
       cddbProtocolCommand: CddbProtocolCommand <- ZIO.succeed(determineProtocolCommand(requestString))
-      _ <- log.info(s"CddbProtocolCommand is: '$cddbProtocolCommand'")
+      _ <- ZIO.logInfo(s"CddbProtocolCommand is: '$cddbProtocolCommand'")
 
       // ...and do it:
       result <- processCddbCommand(cddbProtocolCommand, requestString, oldSessionState)

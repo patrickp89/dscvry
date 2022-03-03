@@ -1,14 +1,14 @@
 package de.netherspace.apps.dscvry
 
-import zio.clock._
-import zio.console._
-import zio.duration._
+import zio.Clock
+import zio.Duration
 import zio.logging._
-import zio.nio.core._
-import zio.nio.core.channels._
+import zio.nio.channels._
+import zio.nio.{Buffer, ByteBuffer, InetSocketAddress, SocketAddress}
 import zio.test.Assertion._
 import zio.test.TestAspect._
 import zio.test._
+import zio.durationInt
 import zio.{Schedule, ZIO, ZLayer}
 
 import java.nio.charset.StandardCharsets
@@ -17,9 +17,6 @@ object CddbdServerTest extends DefaultRunnableSpec {
 
   val testPort = 8881
 
-  val testLogger: ZLayer[Console & Clock, Nothing, Logging] =
-    Logging.ignore
-
   def spec = suite("CddbServerSuite")(
     testM("server sends banner") {
       for {
@@ -27,7 +24,6 @@ object CddbdServerTest extends DefaultRunnableSpec {
         server <- new CddbdServer()
           .bootstrap(testPort, Schedule.once)
           .useNow
-          .provideCustomLayer(testLogger)
           .fork
 
         // open client conn and read our banner:
@@ -35,7 +31,11 @@ object CddbdServerTest extends DefaultRunnableSpec {
         buffer <- SocketChannel.open(addr).use { client =>
           for {
             b <- Buffer.byte(65)
-            _ <- client.read(b)
+            _ <- client.useBlocking { c =>
+              for {
+                _ <- c.read(b)
+              } yield ()
+            }
           } yield b
         }
         _ <- server.join
@@ -45,7 +45,7 @@ object CddbdServerTest extends DefaultRunnableSpec {
         _ <- buffer.flip
         remainingAfterFlip <- buffer.remaining
         responseChunk <- buffer.getChunk(remainingAfterFlip)
-        charset <- ZIO.succeed(zio.nio.core.charset.Charset.availableCharsets(StandardCharsets.ISO_8859_1.name))
+        charset <- ZIO.succeed(zio.nio.charset.Charset.availableCharsets(StandardCharsets.ISO_8859_1.name))
         charsettedRequestChunk <- charset.decodeChunk(responseChunk)
         banner <- ZIO.succeed(
           charsettedRequestChunk.toList.map(c => String.valueOf(c)).mkString

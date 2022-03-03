@@ -1,19 +1,17 @@
 package de.netherspace.apps.dscvry
 
 import zio._
-import zio.nio.core.{Buffer, ByteBuffer}
+import zio.nio.{Buffer, ByteBuffer}
 
 object BufferUtils {
 
-  def newBuffer(capacity: Option[Int]): ZManaged[Any, Exception, ByteBuffer] = {
-    for {
-      b <- Managed.fromEffect {
-        for {
-          buffer <- Buffer.byte(
-            capacity.orElse(Some(Constants.defaultRequestBufferSize)).get
+  def newBuffer(capacity: Option[Int]): ZIO[Any, Exception, ByteBuffer] =
+    Buffer
+      .byte(
+        capacity
+          .orElse(
+            Some(Constants.defaultRequestBufferSize)
           )
-        } yield (buffer)
-      }
-    } yield (b)
-  }
+          .get
+      )
 }

@@ -1,8 +1,7 @@
 package de.netherspace.apps.dscvry
 
 import zio._
-import zio.clock._
-import zio.console._
+import zio.Clock
 import zio.logging._
 
 object CddbdBootstrap {
@@ -12,7 +11,7 @@ object CddbdBootstrap {
 
   val appLogic: ZIO[CddbServerEnv, Exception, Unit] =
     for {
-      _ <- log.info("Starting server...")
+      _ <- ZIO.logInfo("Starting server...")
       _ <- new CddbdServer()
         .bootstrap(ServerPort, nioSelectionSchedule)
         .useForever

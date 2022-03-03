@@ -1,14 +1,12 @@
 package de.netherspace.apps.dscvry
 
 import zio._
-import zio.blocking.Blocking
-import zio.clock._
-import zio.console._
-import zio.duration._
+import zio.Clock
+import zio.Duration
 import zio.logging._
-import zio.nio.core.channels.SelectionKey.Operation
-import zio.nio.core.channels._
-import zio.nio.core.{Buffer, ByteBuffer, InetSocketAddress, SocketAddress}
+import zio.nio.channels.SelectionKey.Operation
+import zio.nio.channels._
+import zio.nio.{Buffer, ByteBuffer, InetSocketAddress, SocketAddress}
 import zio.stream._
 
 import java.io.{ByteArrayOutputStream, IOException}
@@ -16,9 +14,8 @@ import java.nio.charset.StandardCharsets
 import java.util
 
 type CddbServerEnv =
-  zio.Has[zio.logging.Logger[String]]
-    & zio.Has[zio.console.Console.Service]
-    & zio.Has[zio.clock.Clock.Service]
+  zio.Console
+    & zio.Clock
 
 type CddbdServerApp = ZManaged[
   CddbServerEnv,
@@ -39,23 +36,23 @@ class CddbdServer {
   private def registerForBannerWriting(selector: Selector,
                                        clientChannel: SocketChannel): NioChannelOperation = {
     for {
-      _ <- log.debug(s"Writing banner to client channel $clientChannel")
+      _ <- ZIO.logDebug(s"Writing banner to client channel $clientChannel")
       initialSessionState <- cddbdProtocol.createInitialSessionState()
       _ <- clientChannel.configureBlocking(false)
       _ <- clientChannel.register(
         selector,
-        Operation.Write,
-        att = Some(initialSessionState)
+        Set(Operation.Write),
+        attachment =  Some(initialSessionState)
       )
     } yield ()
   }
 
-  private def registerNewClientConn(scope: Managed.Scope, selector: Selector, key: SelectionKey,
-                                    serverSocketChannel: ServerSocketChannel) = {
+  private def registerNewClientConn(scope: Managed.Scope, selector: Selector,
+      key: SelectionKey, serverSocketChannel: ServerSocketChannel) = {
     for {
       // accept a new client connection:
-      _ <- log.info("Accepting new client connection...")
-      scopedAccept <- scope(serverSocketChannel.accept)
+      _ <- ZIO.logInfo("Accepting new client connection...")
+      scopedAccept <- scope(serverSocketChannel.useNonBlockingManaged(_.accept))
       (_, clientSocketChannelOption) = scopedAccept
 
       // the first thing we'll do (i.e. right after the connection
@@ -77,10 +74,10 @@ class CddbdServer {
       _ <- buffer.flip
 
       remaining <- buffer.remaining
-      _ <- log.trace(s"buffer.remaining = $remaining")
+      _ <- ZIO.logTrace(s"buffer.remaining = $remaining")
 
       requestChunk <- buffer.getChunk(remaining)
-      _ <- log.trace(s"buffer.getChunk(remaining) = $requestChunk")
+      _ <- ZIO.logTrace(s"buffer.getChunk(remaining) = $requestChunk")
 
       // handle the request!
       newSessionState <- cddbdProtocol.handleRequest(requestChunk, sessionState)
@@ -88,8 +85,8 @@ class CddbdServer {
       // send the response back to the client:
       _ <- clientChannel.register(
         selector,
-        Operation.Write,
-        att = Some(newSessionState)
+        Set(Operation.Write),
+        attachment = Some(newSessionState)
       )
     } yield ()
   }
@@ -103,26 +100,31 @@ class CddbdServer {
   }
 
 
-  private def readFromClientConn(scope: Managed.Scope, selector: Selector, key: SelectionKey,
-                                 clientChannel: SocketChannel): NioChannelOperation = {
+  private def readFromClientConn(selector: Selector, key: SelectionKey,
+      clientChannel: SocketChannel): NioChannelOperation = {
     for {
-      _ <- log.trace(s"Key $key is readable...")
+      _ <- ZIO.logTrace(s"Key $key is readable...")
       att <- key.attachment
       sessionState <- extractSessionState(att)
-      buffer <- BufferUtils.newBuffer(None).use { b =>
+      b <- BufferUtils.newBuffer(None)
+      buffer <-
         for {
           clientChannelIsConnected <- clientChannel.isConnected
           clientChannelIsOpen <- clientChannel.isOpen
           _ <- ZIO.when(clientChannelIsConnected && clientChannelIsOpen) {
             for {
-              _ <- log.trace(s"Reading from client channel $clientChannel...")
+              _ <- ZIO.logTrace(s"Reading from client channel $clientChannel...")
 
               // read from the client and handle (some) exceptions gracefully:
-              i <- clientChannel.read(b).catchSome {
-                case _: java.io.EOFException => ZIO.succeed(0)
-                case _: java.net.SocketException => ZIO.succeed(-1)
+              i <- clientChannel.useNonBlocking { client =>
+                for {
+                  x <- client.read(b).catchSome {
+                    case _: java.io.EOFException => ZIO.succeed(0)
+                    case _: java.net.SocketException => ZIO.succeed(-1)
+                  }
+                } yield (x)
               }
-              _ <- log.trace(s"I read $i bytes from client channel $clientChannel!")
+              _ <- ZIO.logTrace(s"I read $i bytes from client channel $clientChannel!")
 
               // the client closed the connection:
               _ <- ZIO.when(i < 0) {
@@ -136,8 +138,8 @@ class CddbdServer {
                 for {
                   _ <- clientChannel.register(
                     selector,
-                    Operation.Read,
-                    att = Some(
+                    Set(Operation.Read),
+                    attachment = Some(
                       sessionState.copy(buffer = Some(sessionState.buffer.get))
                     )
                   )
@@ -154,38 +156,39 @@ class CddbdServer {
             } yield ()
           }
         } yield (b)
-      }
     } yield ()
   }
 
 
-  private def writeToClientConn(scope: Managed.Scope, selector: Selector,
-                                key: SelectionKey, clientChannel: SocketChannel): NioChannelOperation = {
+  private def writeToClientConn(selector: Selector, key: SelectionKey,
+      clientChannel: SocketChannel): NioChannelOperation = {
     for {
-      _ <- log.debug(s"Writing to client channel $clientChannel...")
+      _ <- ZIO.logDebug(s"Writing to client channel $clientChannel...")
       att <- key.attachment
       sessionState <- extractSessionState(att)
       _ <- sessionState.buffer.get.flip
 
       remaining <- sessionState.buffer.get.remaining
-      _ <- log.trace(s"buffer.remaining = $remaining")
+      _ <- ZIO.logTrace(s"buffer.remaining = $remaining")
 
       dupl <- sessionState.buffer.get.duplicate
       requestChunk <- dupl.getChunk(remaining)
-      _ <- log.trace(s"buffer.getChunk(remaining) = $requestChunk")
+      _ <- ZIO.logTrace(s"buffer.getChunk(remaining) = $requestChunk")
 
-      i <- clientChannel.write(
-        sessionState.buffer.get
-      )
+      i <- clientChannel.useNonBlocking { client =>
+        for {
+          x <- client.write(sessionState.buffer.get)
+        } yield (x)
+      }
       _ <- sessionState.buffer.get.clear
       _ <- clientChannel.register(
         selector,
-        Operation.Read,
-        att = Some(
+        Set(Operation.Read),
+        attachment = Some(
           sessionState.copy(buffer = Some(sessionState.buffer.get))
         )
       )
-      _ <- log.debug(s"I wrote $i bytes to client channel $clientChannel!")
+      _ <- ZIO.logDebug(s"I wrote $i bytes to client channel $clientChannel!")
     } yield ()
   }
 
@@ -199,12 +202,12 @@ class CddbdServer {
 
       case clientChannel: SocketChannel if readyOps(Operation.Write) =>
         for {
-          _ <- writeToClientConn(scope, selector, key, clientChannel)
+          _ <- writeToClientConn(selector, key, clientChannel)
         } yield ()
 
       case clientChannel: SocketChannel if readyOps(Operation.Read) =>
         for {
-          _ <- readFromClientConn(scope, selector, key, clientChannel)
+          _ <- readFromClientConn(selector, key, clientChannel)
         } yield ()
     }
     } *> selector.removeKey(key)
@@ -220,19 +223,18 @@ class CddbdServer {
     } yield ()
   }
 
-
   def bootstrap(port: Int, nioSelectionSchedule: Schedule[Any, Any, Any]): CddbdServerApp = {
     for {
       scope <- Managed.scope
       selector <- Selector.open
       serverSocketChannel <- ServerSocketChannel.open
-      _ <- Managed.fromEffect {
+      _ <- Managed.fromZIO {
         for {
-          _ <- log.info(s"Binding on port $port...")
+          _ <- ZIO.logInfo(s"Binding on port $port...")
           serverSocket <- InetSocketAddress.hostNameResolved("127.0.0.1", port)
           _ <- serverSocketChannel.bindTo(serverSocket)
           _ <- serverSocketChannel.configureBlocking(false)
-          _ <- serverSocketChannel.register(selector, Operation.Accept)
+          _ <- serverSocketChannel.register(selector, Set(Operation.Accept))
           _ <- selectKeys(scope, selector).repeat(nioSelectionSchedule)
         } yield ()
       }

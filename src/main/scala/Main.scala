@@ -1,22 +1,18 @@
 import de.netherspace.apps.dscvry.CddbdBootstrap
-import zio._
-import zio.clock._
-import zio.console._
-import zio.logging._
+import zio.Clock
+import zio.ZLayer
+import zio.URIO
+import zio.ZEnv
+import zio.ExitCode
+import zio.URLayer
+import zio.UIO
+
 
 object Main extends zio.App {
-
-  // compose a logging service from Console + Clock:
-  val logger: ZLayer[Console & Clock, Nothing, Logging] =
-    Logging.console(
-      logLevel = LogLevel.Info,
-      format = LogFormat.ColoredLogFormat()
-    ) >>> Logging.withRootLoggerName("dscvry")
 
   // run the app:
   override def run(args: List[String]): URIO[ZEnv, ExitCode] =
     CddbdBootstrap
       .appLogic
-      .provideCustomLayer(logger)
       .exitCode
 }

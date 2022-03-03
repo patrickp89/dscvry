@@ -4,8 +4,7 @@ import org.scalatest._
 import org.scalatest.flatspec._
 import org.scalatest.matchers._
 import zio._
-import zio.clock._
-import zio.console._
+import zio.Clock
 import zio.logging._
 
 import java.io.{InputStreamReader, PrintWriter}
@@ -20,13 +19,6 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
   private var executor: Option[ExecutorService] = None
 
 
-  val testLogger: ZLayer[Console & Clock, Nothing, Logging] =
-    Logging.console(
-      logLevel = LogLevel.Info,
-      format = LogFormat.ColoredLogFormat()
-    ) >>> Logging.withRootLoggerName("CddbdServerSpec")
-
-
   override def beforeAll(): Unit = {
     executor = Some(Executors.newCachedThreadPool())
     executor.get.submit(new Runnable {
@@ -35,7 +27,6 @@ class CddbdServerSpec extends AnyFlatSpec with should.Matchers with BeforeAndAft
         zio.Runtime.default.unsafeRun(
           CddbdBootstrap
             .appLogic
-            .provideCustomLayer(testLogger)
             .exitCode
         )
       }
